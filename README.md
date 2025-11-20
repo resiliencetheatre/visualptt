@@ -29,7 +29,7 @@ make
 sudo make install
 ```
 
-## Configuration
+## Installation
 
 Basic installation notes for Debian 13 host.
 
@@ -60,6 +60,8 @@ systemctl --user enable --now visualptt-tx.service
 systemctl --user status visualptt-tx.service
 ```
 
-...to be continued...
+## Configuration
+
+..to be continued..
 
 

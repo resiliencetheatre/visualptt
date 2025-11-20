@@ -95,6 +95,13 @@ static GstElement *start_recording_pipeline(const char *filename)
         "v4l2src device=/dev/video0 ! "
         "videoconvert ! videoscale ! "
         "video/x-raw,width=160,height=120,format=I420 ! "
+        "clockoverlay "
+            "time-format=\"%%d.%%m.%%Y - %%H:%%M:%%S\" "
+            "text=\"Edge City\""
+            "halignment=center valignment=top "
+            "xpad=0 ypad=0 "
+            "shaded-background=false font-desc=\"Sans, 26\" "
+            "color=0xFFFFFFFF ! "
         "videorate ! video/x-raw,framerate=5/1 ! "
         "x264enc bitrate=100 speed-preset=veryfast "
             "key-int-max=10 tune=zerolatency byte-stream=true ! "
@@ -134,6 +141,7 @@ static GstElement *start_recording_pipeline(const char *filename)
     log_info("Recording started to file: %s", filename);
     return pipeline;
 }
+
 
 /* Stop GStreamer pipeline cleanly: send EOS (best-effort), wait a bit, then set NULL & unref */
 static void stop_recording_pipeline(GstElement *pipeline)
