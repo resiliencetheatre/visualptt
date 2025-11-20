@@ -30,6 +30,9 @@
  * ptt_up_value = 0
  * output_dir = /path/to/spooldir      ; optional, where finalized MKVs are moved
  * indicator_file = /path/to/flagfile  ; optional, touched on PTT down, deleted on PTT up
+ * ptt_down_threshold_ms = 1000        ; optional, hold time before TX (default 1000 ms)
+ * ptt_start_wav = /path/to/ptt_start.wav ; optional, played when TX is accepted/starts
+ * ptt_end_wav   = /path/to/ptt_end.wav   ; optional, played when TX finishes
  */
 
 #include <stdio.h>
@@ -70,6 +73,15 @@ static void make_timestamp_filename(char *buf, size_t len)
     struct tm tm;
     localtime_r(&t, &tm);
     strftime(buf, len, "rec_%Y%m%d_%H%M%S.mkv", &tm);
+}
+
+/* Small helper: difference in ms between two timespecs (now - then) */
+static long timespec_diff_ms(const struct timespec *now,
+                             const struct timespec *then)
+{
+    long sec  = (long)(now->tv_sec - then->tv_sec);
+    long nsec = (long)(now->tv_nsec - then->tv_nsec);
+    return sec * 1000 + nsec / 1000000;
 }
 
 /* Start GStreamer recording pipeline, return GstElement* or NULL on error */
@@ -237,6 +249,84 @@ static void move_finished_file(const char *filename, const char *output_dir)
     }
 }
 
+/* Play a short WAV (or any audio) file using GStreamer.
+ * This is synchronous: it blocks until EOS or error, or up to ~5 seconds.
+ */
+static void play_wav(const char *path)
+{
+    if (!path || !*path)
+        return;
+
+    char pipeline_str[1024];
+
+    /* Use quotes around location to tolerate spaces in path (no embedded quotes). */
+    snprintf(pipeline_str, sizeof(pipeline_str),
+             "filesrc location=\"%s\" ! decodebin ! "
+             "audioconvert ! audioresample ! autoaudiosink",
+             path);
+
+    log_debug("Playing WAV: %s", pipeline_str);
+
+    GError *err = NULL;
+    GstElement *p = gst_parse_launch(pipeline_str, &err);
+    if (!p) {
+        log_error("Failed to create WAV pipeline for '%s': %s",
+                  path, err ? err->message : "unknown error");
+        if (err) g_error_free(err);
+        return;
+    }
+    if (err) {
+        log_warn("WAV pipeline parse warning: %s", err->message);
+        g_error_free(err);
+    }
+
+    GstStateChangeReturn ret = gst_element_set_state(p, GST_STATE_PLAYING);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        log_error("Failed to start WAV playback for '%s'", path);
+        gst_object_unref(p);
+        return;
+    }
+
+    GstBus *bus = gst_element_get_bus(p);
+    GstMessage *msg = gst_bus_timed_pop_filtered(
+        bus,
+        5 * GST_SECOND,
+        GST_MESSAGE_EOS | GST_MESSAGE_ERROR
+    );
+
+    if (msg) {
+        switch (GST_MESSAGE_TYPE(msg)) {
+        case GST_MESSAGE_EOS:
+            log_debug("WAV playback EOS for '%s'", path);
+            break;
+        case GST_MESSAGE_ERROR: {
+            GError *err2 = NULL;
+            gchar *debug_info = NULL;
+            gst_message_parse_error(msg, &err2, &debug_info);
+            log_error("WAV playback ERROR for '%s': %s",
+                      path, err2 ? err2->message : "unknown error");
+            if (debug_info) {
+                log_debug("WAV debug: %s", debug_info);
+                g_free(debug_info);
+            }
+            if (err2) g_error_free(err2);
+            break;
+        }
+        default:
+            break;
+        }
+        gst_message_unref(msg);
+    } else {
+        log_warn("WAV playback timeout for '%s'", path);
+    }
+
+    if (bus)
+        gst_object_unref(bus);
+
+    gst_element_set_state(p, GST_STATE_NULL);
+    gst_object_unref(p);
+}
+
 /* Create/touch indicator file with a timestamp */
 static void create_indicator_file(const char *path)
 {
@@ -289,7 +379,7 @@ int main(int argc, char *argv[])
     while ((opt = getopt(argc, argv, "dlh")) != -1) {
         switch (opt) {
         case 'h':
-            fprintf(stderr, "\npttkey_rec\n");
+            fprintf(stderr, "\nvisualptt-tx\n");
             fprintf(stderr, "\n Options: -l enable logging\n");
             fprintf(stderr, "          -d set log level to debug\n\n");
             return 0;
@@ -309,7 +399,7 @@ int main(int argc, char *argv[])
 
     signal(SIGINT, handle_sigint);
 
-    int state = 0; /* 0 = idle, 1 = PTT down / recording */
+    int state = 0; /* 0 = idle/not recording, 1 = recording */
     int rcode = 0;
     char keyboard_name[256] = "Unknown";
     char *keyboard_device = NULL;
@@ -319,6 +409,16 @@ int main(int argc, char *argv[])
     char *ptt_up_type, *ptt_up_code, *ptt_up_value;
     char *output_dir = NULL;       /* output directory for finalized files */
     char *indicator_file = NULL;   /* indicator file path */
+
+    char *ptt_threshold_str = NULL;
+    int   ptt_down_threshold_ms = 1000; /* default 1s */
+
+    char *ptt_start_wav = NULL;
+    char *ptt_end_wav   = NULL;
+
+    /* Track physical key state for threshold */
+    bool ptt_pressed = false;
+    struct timespec ptt_down_ts;
 
     /* Read ini-file */
     ini_t *config = ini_load("pttkey.ini");
@@ -338,6 +438,19 @@ int main(int argc, char *argv[])
     ini_sget(config, "pttkey", "ptt_up_value", NULL, &ptt_up_value);
     ini_sget(config, "pttkey", "output_dir", NULL, &output_dir);
     ini_sget(config, "pttkey", "indicator_file", NULL, &indicator_file);
+
+    ini_sget(config, "pttkey", "ptt_down_threshold_ms", NULL, &ptt_threshold_str);
+    if (ptt_threshold_str) {
+        int v = atoi(ptt_threshold_str);
+        if (v > 0) {
+            ptt_down_threshold_ms = v;
+        }
+    }
+
+    ini_sget(config, "pttkey", "ptt_start_wav", NULL, &ptt_start_wav);
+    ini_sget(config, "pttkey", "ptt_end_wav",   NULL, &ptt_end_wav);
+
+    log_info("PTT hold threshold: %d ms", ptt_down_threshold_ms);
 
     if (!keyboard_device) {
         log_error("keyboard_device not set in pttkey.ini");
@@ -360,6 +473,13 @@ int main(int argc, char *argv[])
         remove_indicator_file(indicator_file);
     }
 
+    if (ptt_start_wav && *ptt_start_wav) {
+        log_info("PTT start WAV: %s", ptt_start_wav);
+    }
+    if (ptt_end_wav && *ptt_end_wav) {
+        log_info("PTT end WAV: %s", ptt_end_wav);
+    }
+
     /* Open keyboard */
     int keyboard_fd = open(keyboard_device, O_RDONLY | O_NONBLOCK);
     if (keyboard_fd == -1) {
@@ -377,48 +497,36 @@ int main(int argc, char *argv[])
 
     struct input_event keyboard_event;
 
-    GstElement *pipeline = NULL; /* current recording pipeline, or NULL */
-    char current_filename[128] = {0}; /* holds the base name of the current recording */
+    GstElement *pipeline = NULL;            /* current recording pipeline, or NULL */
+    char current_filename[128] = {0};       /* holds the base name of the current recording */
 
     while (g_running) {
 
         ssize_t n = read(keyboard_fd, &keyboard_event, sizeof(keyboard_event));
         if (n == (ssize_t)sizeof(keyboard_event)) {
 
-            /* PTT down */
-            if (state == 0 &&
-                keyboard_event.type  == atoi(ptt_down_type) &&
+            /* Physical PTT down: record timestamp, but do not start TX yet */
+            if (keyboard_event.type  == atoi(ptt_down_type) &&
                 keyboard_event.code  == atoi(ptt_down_code) &&
                 keyboard_event.value == atoi(ptt_down_value))
             {
-                log_info("[%d] PTT down", getpid());
-                state = 1;
-
-                make_timestamp_filename(current_filename, sizeof(current_filename));
-                log_info("[%d] Starting recording to %s", getpid(), current_filename);
-
-                pipeline = start_recording_pipeline(current_filename);
-                if (!pipeline) {
-                    log_error("[%d] Failed to start recording pipeline", getpid());
-                    /* safer to revert to idle state */
-                    state = 0;
-                    current_filename[0] = '\0';
-                } else {
-                    /* Touch indicator file to signal "incoming message" */
-                    create_indicator_file(indicator_file);
-                }
+                clock_gettime(CLOCK_MONOTONIC, &ptt_down_ts);
+                ptt_pressed = true;
+                log_debug("[%d] PTT physical down detected", getpid());
             }
 
             /* PTT release */
-            if (state == 1 &&
-                keyboard_event.type  == atoi(ptt_up_type) &&
+            if (keyboard_event.type  == atoi(ptt_up_type) &&
                 keyboard_event.code  == atoi(ptt_up_code) &&
                 keyboard_event.value == atoi(ptt_up_value))
             {
-                log_info("[%d] PTT up", getpid());
-                state = 0;
+                log_debug("[%d] PTT physical up detected", getpid());
 
-                if (pipeline) {
+                /* If we were actively recording, stop now */
+                if (state == 1 && pipeline) {
+                    log_info("[%d] PTT up -> stopping TX", getpid());
+                    state = 0;
+
                     stop_recording_pipeline(pipeline);
                     pipeline = NULL;
 
@@ -427,10 +535,49 @@ int main(int argc, char *argv[])
                         move_finished_file(current_filename, output_dir);
                         current_filename[0] = '\0';
                     }
+
+                    /* Remove indicator file now that transmission ended */
+                    remove_indicator_file(indicator_file);
+
+                    /* Optional end beep
+                    play_wav(ptt_end_wav); */
                 }
 
-                /* Remove indicator file now that transmission ended */
-                remove_indicator_file(indicator_file);
+                /* In any case, key is no longer physically pressed */
+                ptt_pressed = false;
+            }
+        }
+
+        /* Check if PTT has been held long enough to start TX */
+        if (ptt_pressed && state == 0) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            long held_ms = timespec_diff_ms(&now, &ptt_down_ts);
+
+            if (held_ms >= ptt_down_threshold_ms) {
+                log_info("[%d] PTT accepted, held %ld ms (>= %d ms)",
+                         getpid(), held_ms, ptt_down_threshold_ms);
+
+                make_timestamp_filename(current_filename, sizeof(current_filename));
+                log_info("[%d] Starting recording to %s", getpid(), current_filename);
+
+                pipeline = start_recording_pipeline(current_filename);
+                if (!pipeline) {
+                    log_error("[%d] Failed to start recording pipeline", getpid());
+                    state = 0;
+                    current_filename[0] = '\0';
+                    /* We keep ptt_pressed = true, but since state==0 and
+                       pipeline==NULL, if user keeps holding, we may try again.
+                       That might be okay, or we can clear ptt_pressed here if desired. */
+                } else {
+                    state = 1;
+
+                    /* Touch indicator file to signal "incoming message" */
+                    create_indicator_file(indicator_file);
+
+                    /* Optional PTT start beep */
+                    play_wav(ptt_start_wav);
+                }
             }
         }
 

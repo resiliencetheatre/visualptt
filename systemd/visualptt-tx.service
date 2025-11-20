@@ -1,0 +1,27 @@
+[Unit]
+Description=Visual PTT Transmitter (visualptt-tx)
+After=graphical-session.target pipewire.service pulseaudio.service
+
+[Service]
+Type=simple
+
+# Directory where pttkey.ini lives
+WorkingDirectory=/opt/visualptt/
+
+# Run with logging enabled (-l). Add -d if you want debug logs.
+ExecStart=/usr/local/bin/visualptt-tx -l
+
+# Auto-restart on crash
+Restart=on-failure
+RestartSec=2
+
+# Optional: uncomment to debug GStreamer issues
+# Environment=GST_DEBUG=2
+
+# This is a user service, so it runs as your user, which should:
+#  - Be in 'audio' group (for ALSA)
+#  - Be in 'video' group (for /dev/video0)
+#  - Be in 'input' group (for /dev/input/eventX)
+
+[Install]
+WantedBy=default.target

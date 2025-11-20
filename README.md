@@ -3,7 +3,12 @@
 Small example programs to send and receive video messages via file system. 
 Note that this project contains both written and generated code.
 
-## Requirements
+Status of this repository is Work In Progress!
+
+
+## Installation
+
+Install required packages:
 
 ```
 sudo apt install \
@@ -14,4 +19,47 @@ gstreamer1.0-plugins-good \
 gstreamer1.0-plugins-bad \
 gstreamer1.0-plugins-ugly
 ```
+
+Build and install:
+
+```
+git clone https://codeberg.org/resiliencetheatre/visualptt.git
+cd visualptt
+make
+sudo make install
+```
+
+## Configuration
+
+Basic installation notes for Debian 13 host.
+
+```
+chown -R $USER:$USER /opt/visualptt
+mkdir -p /opt/visualptt/output
+cp pttkey.ini /opt/visualptt/
+```
+
+Create user service for visualptt-tx:
+
+```
+mkdir -p ~/.config/systemd/user
+cp systemd/visualptt-tx.service ~/.config/systemd/user/
+```
+
+Make sure your user is part of required groups:
+
+```
+sudo usermod -aG audio,video,input $USER
+```
+
+Enable and start systemd service:
+
+```
+systemctl --user daemon-reload
+systemctl --user enable --now visualptt-tx.service
+systemctl --user status visualptt-tx.service
+```
+
+...to be continued...
+
 
