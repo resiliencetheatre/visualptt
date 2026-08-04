@@ -84,20 +84,51 @@ static long timespec_diff_ms(const struct timespec *now,
     return sec * 1000 + nsec / 1000000;
 }
 
+/* Convert a relative path to an absolute path. */
+static int make_absolute_path(const char *path, char *out, size_t out_len)
+{
+    if (!path || !*path || !out || out_len == 0)
+        return -1;
+
+    if (path[0] == '/') {
+        if (g_strlcpy(out, path, out_len) >= out_len) {
+            log_error("Path is too long: %s", path);
+            return -1;
+        }
+        return 0;
+    }
+
+    char cwd[PATH_MAX];
+    if (!getcwd(cwd, sizeof(cwd))) {
+        log_error("getcwd failed: %s", strerror(errno));
+        return -1;
+    }
+
+    int n = snprintf(out, out_len, "%s/%s", cwd, path);
+    if (n < 0 || (size_t)n >= out_len) {
+        log_error("Absolute path is too long: %s/%s", cwd, path);
+        return -1;
+    }
+
+    return 0;
+}
+
 /* Start GStreamer recording pipeline, return GstElement* or NULL on error */
 static GstElement *start_recording_pipeline(const char *filename)
 {
-    char pipeline_str[1024];
+    gchar *escaped_filename = g_strescape(filename, NULL);
+    if (!escaped_filename) {
+        log_error("Failed to escape recording filename: %s", filename);
+        return NULL;
+    }
 
-    /* You can tweak devices / bitrates here if needed. */
-    snprintf(pipeline_str, sizeof(pipeline_str),
-
+    gchar *pipeline_str = g_strdup_printf(
         "v4l2src device=/dev/video0 ! "
         "videoconvert ! videoscale ! "
         "video/x-raw,width=160,height=120,format=I420 ! "
         "clockoverlay "
             "time-format=\"%%d.%%m.%%Y - %%H:%%M:%%S\" "
-            "text=\"Edge City\""
+            "text=\"Edge City\" "
             "halignment=center valignment=top "
             "xpad=0 ypad=0 "
             "shaded-background=false font-desc=\"Sans, 26\" "
@@ -108,32 +139,50 @@ static GstElement *start_recording_pipeline(const char *filename)
         "h264parse config-interval=-1 ! queue ! mux. "
         "alsasrc device=hw:0 ! audioconvert ! audioresample ! "
         "audio/x-raw,rate=48000,channels=1 ! "
-        "opusenc bitrate=8000 frame-size=40 complexity=5 ! "
+        "opusenc bitrate=24000 frame-size=40 complexity=5 ! "
         "queue ! mux. "
         "matroskamux name=mux streamable=true ! "
-        "filesink location=%s",
-
-        filename
+        "filesink location=\"%s\"",
+        escaped_filename
     );
+    g_free(escaped_filename);
+
+    if (!pipeline_str) {
+        log_error("Failed to allocate GStreamer pipeline string");
+        return NULL;
+    }
 
     log_debug("Starting GStreamer pipeline: %s", pipeline_str);
 
     GError *err = NULL;
     GstElement *pipeline = gst_parse_launch(pipeline_str, &err);
+    g_free(pipeline_str);
+
     if (!pipeline) {
-        log_error("gst_parse_launch() failed: %s", err ? err->message : "unknown error");
-        if (err) g_error_free(err);
+        log_error("gst_parse_launch() failed: %s",
+                  err ? err->message : "unknown error");
+        if (err)
+            g_error_free(err);
         return NULL;
     }
+
+    /* gst_parse_launch() can return a partial pipeline together with GError.
+     * Treat any parse error as fatal rather than recording with missing elements.
+     */
     if (err) {
-        /* Non-fatal parse warnings */
-        log_warn("GStreamer parse warning: %s", err->message);
+        log_error("Failed to construct complete GStreamer pipeline: %s",
+                  err->message);
         g_error_free(err);
+        gst_element_set_state(pipeline, GST_STATE_NULL);
+        gst_object_unref(pipeline);
+        return NULL;
     }
 
-    GstStateChangeReturn ret = gst_element_set_state(pipeline, GST_STATE_PLAYING);
+    GstStateChangeReturn ret =
+        gst_element_set_state(pipeline, GST_STATE_PLAYING);
     if (ret == GST_STATE_CHANGE_FAILURE) {
-        log_error("Failed to set pipeline to PLAYING");
+        log_error("Failed to set recording pipeline to PLAYING");
+        gst_element_set_state(pipeline, GST_STATE_NULL);
         gst_object_unref(pipeline);
         return NULL;
     }
@@ -141,7 +190,6 @@ static GstElement *start_recording_pipeline(const char *filename)
     log_info("Recording started to file: %s", filename);
     return pipeline;
 }
-
 
 /* Stop GStreamer pipeline cleanly: send EOS (best-effort), wait a bit, then set NULL & unref */
 static void stop_recording_pipeline(GstElement *pipeline)
@@ -235,26 +283,42 @@ static int ensure_output_dir(const char *path)
 }
 
 /* Move finished file to output_dir (if configured) */
-static void move_finished_file(const char *filename, const char *output_dir)
+static int move_finished_file(const char *source_path,
+                              const char *basename,
+                              const char *output_dir)
 {
-    if (!filename || !*filename) {
-        return;
+    if (!source_path || !*source_path || !basename || !*basename)
+        return -1;
+
+    if (!output_dir || !*output_dir)
+        return 0;
+
+    struct stat st;
+    if (stat(source_path, &st) != 0) {
+        log_error("Recording source '%s' does not exist: %s",
+                  source_path, strerror(errno));
+        return -1;
     }
 
-    if (!output_dir || !*output_dir) {
-        /* No output_dir configured, leave file where it is */
-        return;
-    }
+    log_info("Finalized recording: %s (%lld bytes)",
+             source_path, (long long)st.st_size);
 
     char dest[PATH_MAX];
-    snprintf(dest, sizeof(dest), "%s/%s", output_dir, filename);
-
-    if (rename(filename, dest) == 0) {
-        log_info("Moved '%s' -> '%s'", filename, dest);
-    } else {
-        log_error("Failed to move '%s' to '%s': %s",
-                  filename, dest, strerror(errno));
+    int n = snprintf(dest, sizeof(dest), "%s/%s", output_dir, basename);
+    if (n < 0 || (size_t)n >= sizeof(dest)) {
+        log_error("Destination path is too long: %s/%s",
+                  output_dir, basename);
+        return -1;
     }
+
+    if (rename(source_path, dest) == 0) {
+        log_info("Moved '%s' -> '%s'", source_path, dest);
+        return 0;
+    }
+
+    log_error("Failed to move '%s' to '%s': %s",
+              source_path, dest, strerror(errno));
+    return -1;
 }
 
 /* Play a short WAV (or any audio) file using GStreamer.
@@ -415,7 +479,8 @@ int main(int argc, char *argv[])
     char *ptt_up_command = NULL;   /* currently unused */
     char *ptt_down_type, *ptt_down_code, *ptt_down_value;
     char *ptt_up_type, *ptt_up_code, *ptt_up_value;
-    char *output_dir = NULL;       /* output directory for finalized files */
+    char *output_dir = NULL;       /* configured output directory */
+    char output_dir_absolute[PATH_MAX] = {0};
     char *indicator_file = NULL;   /* indicator file path */
 
     char *ptt_threshold_str = NULL;
@@ -470,7 +535,14 @@ int main(int argc, char *argv[])
         if (ensure_output_dir(output_dir) != 0) {
             log_warn("Continuing without output_dir move support.");
             output_dir = NULL;
+        } else if (make_absolute_path(output_dir,
+                                      output_dir_absolute,
+                                      sizeof(output_dir_absolute)) != 0) {
+            log_warn("Could not resolve output_dir to an absolute path; "
+                     "continuing without move support.");
+            output_dir = NULL;
         } else {
+            output_dir = output_dir_absolute;
             log_info("Using output_dir: %s", output_dir);
         }
     }
@@ -506,7 +578,8 @@ int main(int argc, char *argv[])
     struct input_event keyboard_event;
 
     GstElement *pipeline = NULL;            /* current recording pipeline, or NULL */
-    char current_filename[128] = {0};       /* holds the base name of the current recording */
+    char current_filename[128] = {0};       /* base name of current recording */
+    char current_recording_path[PATH_MAX] = {0}; /* absolute staging path */
 
     while (g_running) {
 
@@ -539,9 +612,13 @@ int main(int argc, char *argv[])
                     pipeline = NULL;
 
                     /* Move the finalized file into output_dir (if configured) */
-                    if (current_filename[0] != '\0') {
-                        move_finished_file(current_filename, output_dir);
+                    if (current_filename[0] != '\0' &&
+                        current_recording_path[0] != '\0') {
+                        move_finished_file(current_recording_path,
+                                           current_filename,
+                                           output_dir);
                         current_filename[0] = '\0';
+                        current_recording_path[0] = '\0';
                     }
 
                     /* Remove indicator file now that transmission ended */
@@ -567,13 +644,26 @@ int main(int argc, char *argv[])
                          getpid(), held_ms, ptt_down_threshold_ms);
 
                 make_timestamp_filename(current_filename, sizeof(current_filename));
-                log_info("[%d] Starting recording to %s", getpid(), current_filename);
 
-                pipeline = start_recording_pipeline(current_filename);
+                if (make_absolute_path(current_filename,
+                                       current_recording_path,
+                                       sizeof(current_recording_path)) != 0) {
+                    log_error("[%d] Failed to build absolute recording path", getpid());
+                    ptt_pressed = false;
+                    current_filename[0] = '\0';
+                    continue;
+                }
+
+                log_info("[%d] Starting recording to %s",
+                         getpid(), current_recording_path);
+
+                pipeline = start_recording_pipeline(current_recording_path);
                 if (!pipeline) {
                     log_error("[%d] Failed to start recording pipeline", getpid());
                     state = 0;
                     current_filename[0] = '\0';
+                    current_recording_path[0] = '\0';
+                    ptt_pressed = false;
                     /* We keep ptt_pressed = true, but since state==0 and
                        pipeline==NULL, if user keeps holding, we may try again.
                        That might be okay, or we can clear ptt_pressed here if desired. */
@@ -599,9 +689,13 @@ int main(int argc, char *argv[])
     if (pipeline) {
         stop_recording_pipeline(pipeline);
         pipeline = NULL;
-        if (current_filename[0] != '\0') {
-            move_finished_file(current_filename, output_dir);
+        if (current_filename[0] != '\0' &&
+            current_recording_path[0] != '\0') {
+            move_finished_file(current_recording_path,
+                               current_filename,
+                               output_dir);
             current_filename[0] = '\0';
+            current_recording_path[0] = '\0';
         }
     }
 
