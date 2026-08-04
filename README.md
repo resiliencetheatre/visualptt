@@ -14,6 +14,7 @@ Install required packages:
 sudo apt install \
 libgtk-3-dev \
 libgstreamer1.0-dev \
+gstreamer1.0-alsa \
 gstreamer1.0-plugins-base \
 gstreamer1.0-plugins-good \
 gstreamer1.0-plugins-bad \
