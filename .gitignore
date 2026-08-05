@@ -1,6 +1,7 @@
 visualptt-tx
 visualptt-rx
 visualptt-rx-list
+visualptt
 *.o
 *.mkv
 output
