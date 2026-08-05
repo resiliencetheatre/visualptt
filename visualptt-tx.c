@@ -33,6 +33,7 @@
  * ptt_down_threshold_ms = 1000        ; optional, hold time before TX (default 1000 ms)
  * ptt_start_wav = /path/to/ptt_start.wav ; optional, played when TX is accepted/starts
  * ptt_end_wav   = /path/to/ptt_end.wav   ; optional, played when TX finishes
+ * audio_source = autoaudiosrc            ; optional GStreamer audio source
  */
 
 #include <stdio.h>
@@ -114,8 +115,12 @@ static int make_absolute_path(const char *path, char *out, size_t out_len)
 }
 
 /* Start GStreamer recording pipeline, return GstElement* or NULL on error */
-static GstElement *start_recording_pipeline(const char *filename)
+static GstElement *start_recording_pipeline(const char *filename,
+                                            const char *audio_source)
 {
+    if (!audio_source || !*audio_source)
+        audio_source = "autoaudiosrc";
+
     gchar *escaped_filename = g_strescape(filename, NULL);
     if (!escaped_filename) {
         log_error("Failed to escape recording filename: %s", filename);
@@ -137,13 +142,13 @@ static GstElement *start_recording_pipeline(const char *filename)
         "x264enc bitrate=100 speed-preset=veryfast "
             "key-int-max=10 tune=zerolatency byte-stream=true ! "
         "h264parse config-interval=-1 ! queue ! mux. "
-        "alsasrc device=hw:0 ! audioconvert ! audioresample ! "
+        "%s ! audioconvert ! audioresample ! "
         "audio/x-raw,rate=48000,channels=1 ! "
         "opusenc bitrate=24000 frame-size=40 complexity=5 ! "
         "queue ! mux. "
         "matroskamux name=mux streamable=true ! "
         "filesink location=\"%s\"",
-        escaped_filename
+        audio_source, escaped_filename
     );
     g_free(escaped_filename);
 
@@ -182,6 +187,32 @@ static GstElement *start_recording_pipeline(const char *filename)
         gst_element_set_state(pipeline, GST_STATE_PLAYING);
     if (ret == GST_STATE_CHANGE_FAILURE) {
         log_error("Failed to set recording pipeline to PLAYING");
+        gst_element_set_state(pipeline, GST_STATE_NULL);
+        gst_object_unref(pipeline);
+        return NULL;
+    }
+
+    /* Opening a capture device can complete asynchronously.  Wait for that
+     * transition so callers do not announce a recording that immediately
+     * failed (for example, because the selected device is unavailable). */
+    ret = gst_element_get_state(pipeline, NULL, NULL, 3 * GST_SECOND);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        GstBus *bus = gst_element_get_bus(pipeline);
+        GstMessage *msg = bus ? gst_bus_pop_filtered(bus, GST_MESSAGE_ERROR) : NULL;
+        if (msg) {
+            GError *state_error = NULL;
+            gchar *debug_info = NULL;
+            gst_message_parse_error(msg, &state_error, &debug_info);
+            log_error("Could not open recording pipeline: %s",
+                      state_error ? state_error->message : "unknown error");
+            g_clear_error(&state_error);
+            g_free(debug_info);
+            gst_message_unref(msg);
+        } else {
+            log_error("Recording pipeline failed while opening its devices");
+        }
+        if (bus)
+            gst_object_unref(bus);
         gst_element_set_state(pipeline, GST_STATE_NULL);
         gst_object_unref(pipeline);
         return NULL;
@@ -482,6 +513,7 @@ int main(int argc, char *argv[])
     char *output_dir = NULL;       /* configured output directory */
     char output_dir_absolute[PATH_MAX] = {0};
     char *indicator_file = NULL;   /* indicator file path */
+    char *audio_source = NULL;     /* GStreamer capture source description */
 
     char *ptt_threshold_str = NULL;
     int   ptt_down_threshold_ms = 1000; /* default 1s */
@@ -511,6 +543,7 @@ int main(int argc, char *argv[])
     ini_sget(config, "pttkey", "ptt_up_value", NULL, &ptt_up_value);
     ini_sget(config, "pttkey", "output_dir", NULL, &output_dir);
     ini_sget(config, "pttkey", "indicator_file", NULL, &indicator_file);
+    ini_sget(config, "pttkey", "audio_source", NULL, &audio_source);
 
     ini_sget(config, "pttkey", "ptt_down_threshold_ms", NULL, &ptt_threshold_str);
     if (ptt_threshold_str) {
@@ -524,6 +557,8 @@ int main(int argc, char *argv[])
     ini_sget(config, "pttkey", "ptt_end_wav",   NULL, &ptt_end_wav);
 
     log_info("PTT hold threshold: %d ms", ptt_down_threshold_ms);
+    log_info("Audio source: %s",
+             audio_source && *audio_source ? audio_source : "autoaudiosrc");
 
     if (!keyboard_device) {
         log_error("keyboard_device not set in pttkey.ini");
@@ -657,7 +692,8 @@ int main(int argc, char *argv[])
                 log_info("[%d] Starting recording to %s",
                          getpid(), current_recording_path);
 
-                pipeline = start_recording_pipeline(current_recording_path);
+                pipeline = start_recording_pipeline(current_recording_path,
+                                                    audio_source);
                 if (!pipeline) {
                     log_error("[%d] Failed to start recording pipeline", getpid());
                     state = 0;

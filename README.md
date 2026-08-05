@@ -124,6 +124,22 @@ visualptt /path/to/incoming /path/to/outgoing
 The keyboard, PTT event values, hold threshold, and sounds still come from
 `pttkey.ini`. The two command-line directories override its message paths.
 
+Audio capture defaults to `autoaudiosrc`, which follows the desktop audio
+server's default microphone instead of assuming that ALSA card 0 is the wanted
+device. This also allows GNOME/PipeWire to report the active recording stream.
+It can be overridden in `pttkey.ini`; for example:
+
+```
+# Desktop default (recommended)
+audio_source = autoaudiosrc
+
+# A specific PulseAudio/PipeWire source (find names with: pactl list short sources)
+audio_source = pulsesrc device=SOURCE_NAME
+
+# A specific raw ALSA device (card 2, device 0)
+audio_source = alsasrc device=hw:2,0
+```
+
 ## Installation
 
 Basic installation notes for Debian 13 host.

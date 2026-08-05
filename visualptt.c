@@ -37,6 +37,7 @@ typedef struct {
     char current_recording_path[PATH_MAX];
     char *start_wav;
     char *end_wav;
+    const char *audio_source;
 } VisualPttState;
 
 static int config_int(ini_t *config, const char *key, int default_value)
@@ -84,7 +85,8 @@ static void begin_transmission(VisualPttState *state)
         return;
     }
 
-    state->pipeline = start_recording_pipeline(state->current_recording_path);
+    state->pipeline = start_recording_pipeline(state->current_recording_path,
+                                               state->audio_source);
     if (!state->pipeline) {
         state->current_filename[0] = '\0';
         state->current_recording_path[0] = '\0';
@@ -177,6 +179,10 @@ static gboolean initialize_transmitter(VisualPttState *state,
         state->threshold_ms = atoi(threshold);
     state->start_wav = (char *)ini_get(state->config, "pttkey", "ptt_start_wav");
     state->end_wav = (char *)ini_get(state->config, "pttkey", "ptt_end_wav");
+    state->audio_source = ini_get(state->config, "pttkey", "audio_source");
+    if (!state->audio_source || !*state->audio_source)
+        state->audio_source = "autoaudiosrc";
+    log_info("Combined transmitter audio source: %s", state->audio_source);
 
     if (ensure_output_dir(output_directory) != 0 ||
         make_absolute_path(output_directory, state->output_dir,
