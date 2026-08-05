@@ -5,6 +5,29 @@ Note that this project contains both written and generated code.
 
 Status of this repository is Work In Progress!
 
+## Reasoning
+
+File-based communication provides a simple, flexible, and transport-independent
+way to exchange asynchronous, non-linear messages. A completed message is a
+self-contained object that can be queued, copied, delayed, replayed, annotated,
+or transported by whatever mechanism is available. The applications at each
+end do not need a continuous connection or knowledge of the underlying
+transport.
+
+This demonstration code is intended primarily as a real-life test bench for
+human communication over geostationary-satellite and deep-space links. Their
+latency and intermittent availability make ordinary real-time conversation
+impractical, while persistent audiovisual messages allow each participant to
+respond in their own time. The same approach is useful when developing
+communication systems for other remote or austere environments with limited,
+delayed, or unreliable connectivity.
+
+The design can also be used when crossing security-level boundaries in
+data-diode-connected environments. Messages can be transferred as discrete
+files over an approved one-way path, then inspected, queued, and presented by
+an isolated receiver. The surrounding deployment remains responsible for
+appropriate validation, filtering, access control, and handling rules at each
+security boundary.
 
 ## Installation
 
