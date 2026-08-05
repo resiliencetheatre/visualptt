@@ -152,6 +152,7 @@ static gboolean initialize_transmitter(VisualPttState *state,
 {
     const char *keyboard_device;
     const char *threshold;
+    const char *annotation_clear_delay;
     int length;
 
     state->keyboard_fd = -1;
@@ -182,6 +183,20 @@ static gboolean initialize_transmitter(VisualPttState *state,
     state->audio_source = ini_get(state->config, "pttkey", "audio_source");
     if (!state->audio_source || !*state->audio_source)
         state->audio_source = "autoaudiosrc";
+    annotation_clear_delay = ini_get(state->config, "pttkey",
+                                     "annotation_clear_delay_seconds");
+    if (annotation_clear_delay) {
+        char *end = NULL;
+        unsigned long value = strtoul(annotation_clear_delay, &end, 10);
+
+        if (*annotation_clear_delay != '\0' && end && *end == '\0' &&
+            value <= G_MAXUINT)
+            state->rx.annotation_clear_delay_seconds = (guint)value;
+        else
+            g_printerr("Invalid annotation_clear_delay_seconds '%s'; using %u\n",
+                       annotation_clear_delay,
+                       state->rx.annotation_clear_delay_seconds);
+    }
     log_info("Combined transmitter audio source: %s", state->audio_source);
 
     if (ensure_output_dir(output_directory) != 0 ||
@@ -255,6 +270,9 @@ int main(int argc, char **argv)
     int status;
     char *application_argv[] = { argv[0], NULL };
     int application_argc = 1;
+
+    state.rx.annotation_clear_delay_seconds =
+        DEFAULT_ANNOTATION_CLEAR_DELAY_SECONDS;
 
     if (argc != 3) {
         g_printerr("Usage: %s INPUT_DIRECTORY OUTPUT_DIRECTORY\n", argv[0]);

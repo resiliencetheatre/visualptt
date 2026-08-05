@@ -123,6 +123,9 @@ visualptt /path/to/incoming /path/to/outgoing
 
 The keyboard, PTT event values, hold threshold, and sounds still come from
 `pttkey.ini`. The two command-line directories override its message paths.
+After playback ends, the last annotation remains visible for 30 seconds by
+default. Set `annotation_clear_delay_seconds` in the `[pttkey]` section to
+change the delay; a value of `0` clears it immediately.
 
 Audio capture defaults to `autoaudiosrc`, which follows the desktop audio
 server's default microphone instead of assuming that ALSA card 0 is the wanted

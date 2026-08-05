@@ -45,9 +45,13 @@ typedef struct {
     time_t annotation_mtime;
     off_t annotation_size;
     gboolean annotation_present;
+    guint annotation_clear_delay_seconds;
+    guint annotation_clear_source;
     char watch_dir[PATH_MAX];
     char indicator_path[PATH_MAX];
 } AppState;
+
+#define DEFAULT_ANNOTATION_CLEAR_DELAY_SECONDS 30
 
 static gboolean has_mkv_extension(const char *name)
 {
@@ -110,14 +114,45 @@ static void refresh_annotation(AppState *state, const char *media_file,
               sizeof(state->annotation_media_file));
 }
 
+static void cancel_annotation_clear(AppState *state)
+{
+    if (state->annotation_clear_source != 0) {
+        g_source_remove(state->annotation_clear_source);
+        state->annotation_clear_source = 0;
+    }
+}
+
 static void clear_annotation(AppState *state)
 {
+    cancel_annotation_clear(state);
     if (state->annotation_buffer)
         gtk_text_buffer_set_text(state->annotation_buffer, "", -1);
     state->annotation_media_file[0] = '\0';
     state->annotation_present = FALSE;
     state->annotation_mtime = 0;
     state->annotation_size = 0;
+}
+
+static gboolean clear_annotation_cb(gpointer data)
+{
+    AppState *state = data;
+
+    state->annotation_clear_source = 0;
+    clear_annotation(state);
+    return G_SOURCE_REMOVE;
+}
+
+static void schedule_annotation_clear(AppState *state)
+{
+    cancel_annotation_clear(state);
+    if (!state->annotation_present)
+        return;
+    if (state->annotation_clear_delay_seconds == 0) {
+        clear_annotation(state);
+        return;
+    }
+    state->annotation_clear_source = g_timeout_add_seconds(
+        state->annotation_clear_delay_seconds, clear_annotation_cb, state);
 }
 
 static void update_idle_label(AppState *state)
@@ -146,6 +181,7 @@ static void start_playback(AppState *state, const char *filename)
         return;
     }
 
+    cancel_annotation_clear(state);
     refresh_annotation(state, filename, TRUE);
 
     if (state->playing)
@@ -194,7 +230,7 @@ static gboolean bus_message_cb(GstBus *bus, GstMessage *message, gpointer data)
 
     if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS) {
         stop_playback(state);
-        clear_annotation(state);
+        schedule_annotation_clear(state);
         gtk_label_set_text(state->status_label, "Idle");
         update_idle_label(state);
         gtk_stack_set_visible_child_name(GTK_STACK(state->stack), "idle");
@@ -561,6 +597,7 @@ static gboolean on_delete_event(GtkWidget *widget, GdkEvent *event, gpointer dat
     AppState *state = data;
     (void)widget;
     (void)event;
+    cancel_annotation_clear(state);
     if (state->playbin) {
         gst_element_set_state(state->playbin, GST_STATE_NULL);
         gst_object_unref(state->playbin);
@@ -701,6 +738,8 @@ int main(int argc, char **argv)
     const char *directory = argc >= 2 ? argv[1] : ".";
     int length, status;
 
+    state.annotation_clear_delay_seconds =
+        DEFAULT_ANNOTATION_CLEAR_DELAY_SECONDS;
     g_strlcpy(state.watch_dir, directory, sizeof(state.watch_dir));
     length = g_snprintf(state.indicator_path, sizeof(state.indicator_path),
                         "%s/incoming.flag", state.watch_dir);
