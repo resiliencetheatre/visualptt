@@ -48,13 +48,12 @@ gstreamer1.0-plugins-ugly \
 ffmpeg
 ```
 
-Build and install:
+Build:
 
 ```
-git clone https://codeberg.org/resiliencetheatre/visualptt.git
+git clone https://github.com/resiliencetheatre/visualptt.git
 cd visualptt
 make
-sudo make install
 ```
 
 The persistent GTK receiver keeps received messages in its list and on disk:
@@ -165,6 +164,8 @@ Make sure your user is part of required groups:
 ```
 sudo usermod -aG audio,video,input $USER
 ```
+
+Remember to reboot after changing these groups.
 
 Enable and start systemd service:
 
