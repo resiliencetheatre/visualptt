@@ -30,6 +30,7 @@ typedef struct {
     GtkWidget *stack;
     GtkWidget *idle_label;
     GtkLabel *status_label;
+    GtkTextBuffer *annotation_buffer;
     GtkToggleButton *auto_play;
     GtkListStore *messages;
     GtkTreeSelection *selection;
@@ -40,6 +41,10 @@ typedef struct {
     gboolean playing;
     gboolean selecting_programmatically;
     char current_file[PATH_MAX];
+    char annotation_media_file[PATH_MAX];
+    time_t annotation_mtime;
+    off_t annotation_size;
+    gboolean annotation_present;
     char watch_dir[PATH_MAX];
     char indicator_path[PATH_MAX];
 } AppState;
@@ -48,6 +53,71 @@ static gboolean has_mkv_extension(const char *name)
 {
     size_t len = strlen(name);
     return len >= 4 && strcmp(name + len - 4, ".mkv") == 0;
+}
+
+static void refresh_annotation(AppState *state, const char *media_file,
+                               gboolean force)
+{
+    char text_file[PATH_MAX];
+    struct stat info;
+    gchar *contents = NULL;
+    gchar *display_text = NULL;
+    gsize length = 0;
+    size_t media_length;
+
+    if (!state->annotation_buffer || !media_file)
+        return;
+
+    media_length = strlen(media_file);
+    if (media_length < 4 ||
+        g_snprintf(text_file, sizeof(text_file), "%.*s.txt",
+                   (int)(media_length - 4), media_file) >= (int)sizeof(text_file))
+        return;
+
+    if (stat(text_file, &info) != 0 || !S_ISREG(info.st_mode)) {
+        if (force || state->annotation_present ||
+            g_strcmp0(state->annotation_media_file, media_file) != 0)
+            gtk_text_buffer_set_text(state->annotation_buffer, "", -1);
+        g_strlcpy(state->annotation_media_file, media_file,
+                  sizeof(state->annotation_media_file));
+        state->annotation_present = FALSE;
+        state->annotation_mtime = 0;
+        state->annotation_size = 0;
+        return;
+    }
+
+    if (!force && state->annotation_present &&
+        g_strcmp0(state->annotation_media_file, media_file) == 0 &&
+        state->annotation_mtime == info.st_mtime &&
+        state->annotation_size == info.st_size)
+        return;
+
+    if (g_file_get_contents(text_file, &contents, &length, NULL)) {
+        display_text = g_utf8_make_valid(contents, length);
+        gtk_text_buffer_set_text(state->annotation_buffer, display_text, -1);
+        g_free(display_text);
+        g_free(contents);
+        state->annotation_present = TRUE;
+        state->annotation_mtime = info.st_mtime;
+        state->annotation_size = info.st_size;
+    } else {
+        gtk_text_buffer_set_text(state->annotation_buffer, "", -1);
+        state->annotation_present = FALSE;
+        state->annotation_mtime = 0;
+        state->annotation_size = 0;
+    }
+    g_strlcpy(state->annotation_media_file, media_file,
+              sizeof(state->annotation_media_file));
+}
+
+static void clear_annotation(AppState *state)
+{
+    if (state->annotation_buffer)
+        gtk_text_buffer_set_text(state->annotation_buffer, "", -1);
+    state->annotation_media_file[0] = '\0';
+    state->annotation_present = FALSE;
+    state->annotation_mtime = 0;
+    state->annotation_size = 0;
 }
 
 static void update_idle_label(AppState *state)
@@ -75,6 +145,8 @@ static void start_playback(AppState *state, const char *filename)
         gtk_label_set_text(state->status_label, "Message file is no longer available");
         return;
     }
+
+    refresh_annotation(state, filename, TRUE);
 
     if (state->playing)
         stop_playback(state);
@@ -122,6 +194,7 @@ static gboolean bus_message_cb(GstBus *bus, GstMessage *message, gpointer data)
 
     if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS) {
         stop_playback(state);
+        clear_annotation(state);
         gtk_label_set_text(state->status_label, "Idle");
         update_idle_label(state);
         gtk_stack_set_visible_child_name(GTK_STACK(state->stack), "idle");
@@ -135,6 +208,7 @@ static gboolean bus_message_cb(GstBus *bus, GstMessage *message, gpointer data)
         g_clear_error(&error);
         g_free(debug);
         stop_playback(state);
+        clear_annotation(state);
         gtk_label_set_text(state->status_label, "Playback error (file retained)");
         update_idle_label(state);
         gtk_stack_set_visible_child_name(GTK_STACK(state->stack), "idle");
@@ -276,7 +350,33 @@ static void reload_messages(AppState *state)
     g_queue_clear_full(state->auto_queue, g_free);
     g_hash_table_remove_all(state->known_files);
     gtk_list_store_clear(state->messages);
+    clear_annotation(state);
     scan_directory(state, TRUE);
+}
+
+static guint delete_annotation_files(const char *media_file)
+{
+    static const char *extensions[] = { ".txt", ".wav" };
+    char companion[PATH_MAX];
+    size_t media_length = strlen(media_file);
+    guint failed = 0;
+    guint i;
+
+    if (media_length < 4)
+        return 0;
+
+    for (i = 0; i < G_N_ELEMENTS(extensions); i++) {
+        int length = g_snprintf(companion, sizeof(companion), "%.*s%s",
+                                (int)(media_length - 4), media_file,
+                                extensions[i]);
+        if (length <= 0 || length >= (int)sizeof(companion)) {
+            failed++;
+            continue;
+        }
+        if (unlink(companion) != 0 && errno != ENOENT)
+            failed++;
+    }
+    return failed;
 }
 
 static void delete_selected_cb(GtkButton *button, gpointer data)
@@ -285,6 +385,9 @@ static void delete_selected_cb(GtkButton *button, gpointer data)
     GtkTreeModel *model;
     GtkTreeIter iter;
     gchar *filename = NULL;
+    guint companion_failures;
+    int media_delete_result;
+    int media_delete_error = 0;
     (void)button;
 
     if (!gtk_tree_selection_get_selected(state->selection, &model, &iter)) {
@@ -296,11 +399,21 @@ static void delete_selected_cb(GtkButton *button, gpointer data)
     if (state->playing && g_strcmp0(filename, state->current_file) == 0)
         stop_playback(state);
 
-    if (unlink(filename) == 0) {
+    companion_failures = delete_annotation_files(filename);
+    media_delete_result = unlink(filename);
+    if (media_delete_result != 0)
+        media_delete_error = errno;
+    if (media_delete_result == 0 && companion_failures == 0) {
         gtk_label_set_text(state->status_label, "Message deleted");
+    } else if (media_delete_result == 0) {
+        gchar *status = g_strdup_printf(
+            "Message deleted; failed to delete %u annotation file%s",
+            companion_failures, companion_failures == 1 ? "" : "s");
+        gtk_label_set_text(state->status_label, status);
+        g_free(status);
     } else {
         gchar *status = g_strdup_printf("Could not delete message: %s",
-                                        g_strerror(errno));
+                                        g_strerror(media_delete_error));
         gtk_label_set_text(state->status_label, status);
         g_free(status);
     }
@@ -349,6 +462,7 @@ static void delete_all_cb(GtkButton *button, gpointer data)
             failed++;
             continue;
         }
+        failed += delete_annotation_files(path);
         if (unlink(path) == 0)
             deleted++;
         else
@@ -375,8 +489,11 @@ static void delete_all_cb(GtkButton *button, gpointer data)
 static gboolean poll_directory_cb(gpointer data)
 {
     AppState *state = data;
+
     if (!state->playing)
         update_idle_label(state);
+    if (state->playing)
+        refresh_annotation(state, state->current_file, FALSE);
     return scan_directory(state, FALSE);
 }
 
@@ -457,6 +574,7 @@ static void on_app_activate(GtkApplication *app, gpointer data)
 {
     AppState *state = data;
     GtkWidget *vbox, *video_widget, *idle_box, *scroller, *tree, *checkbox;
+    GtkWidget *annotation_scroller, *annotation_view;
     GtkWidget *button_box, *delete_button, *delete_all_button;
     GtkCellRenderer *renderer;
     GtkTreeViewColumn *column;
@@ -504,10 +622,24 @@ static void on_app_activate(GtkApplication *app, gpointer data)
     g_object_set(state->playbin, "video-sink", video_sink, NULL);
     gst_object_unref(video_sink);
 
+    annotation_view = gtk_text_view_new();
+    state->annotation_buffer =
+        gtk_text_view_get_buffer(GTK_TEXT_VIEW(annotation_view));
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(annotation_view), FALSE);
+    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(annotation_view), FALSE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(annotation_view), GTK_WRAP_WORD_CHAR);
+    gtk_text_view_set_left_margin(GTK_TEXT_VIEW(annotation_view), 4);
+    gtk_text_view_set_right_margin(GTK_TEXT_VIEW(annotation_view), 4);
+    annotation_scroller = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(annotation_scroller),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(annotation_scroller, -1, 76);
+    gtk_container_add(GTK_CONTAINER(annotation_scroller), annotation_view);
+    gtk_box_pack_start(GTK_BOX(vbox), annotation_scroller, FALSE, FALSE, 0);
+
     checkbox = gtk_check_button_new_with_label("Auto play");
     state->auto_play = GTK_TOGGLE_BUTTON(checkbox);
     gtk_toggle_button_set_active(state->auto_play, TRUE);
-    gtk_box_pack_start(GTK_BOX(vbox), checkbox, FALSE, FALSE, 2);
 
     state->messages = gtk_list_store_new(N_COLUMNS, G_TYPE_STRING,
                                          G_TYPE_STRING, G_TYPE_INT64);
@@ -540,6 +672,7 @@ static void on_app_activate(GtkApplication *app, gpointer data)
     gtk_button_box_set_layout(GTK_BUTTON_BOX(button_box), GTK_BUTTONBOX_END);
     delete_button = gtk_button_new_with_label("Delete");
     delete_all_button = gtk_button_new_with_label("Delete all");
+    gtk_container_add(GTK_CONTAINER(button_box), checkbox);
     gtk_container_add(GTK_CONTAINER(button_box), delete_button);
     gtk_container_add(GTK_CONTAINER(button_box), delete_all_button);
     gtk_box_pack_start(GTK_BOX(vbox), button_box, FALSE, FALSE, 2);

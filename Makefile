@@ -32,8 +32,14 @@ COMBINED_SRC    = visualptt.c
 COMBINED_OBJ    = $(COMBINED_SRC:.c=.o)
 COMBINED_TARGET = visualptt
 
-# Default rule: build both
-all: $(REC_TARGET) $(SPOOL_TARGET) $(LIST_TARGET) $(COMBINED_TARGET)
+# Program 5: asynchronous message annotation watcher
+WATCHER_SRC    = annotation_watcher.c
+WATCHER_OBJ    = $(WATCHER_SRC:.c=.o)
+WATCHER_TARGET = annotation-watcher
+
+# Default rule: build all programs
+all: $(REC_TARGET) $(SPOOL_TARGET) $(LIST_TARGET) $(COMBINED_TARGET) \
+	$(WATCHER_TARGET)
 
 # Build PTT TX
 $(REC_TARGET): $(REC_OBJ) $(COMMON_OBJ)
@@ -53,13 +59,21 @@ $(COMBINED_TARGET): $(COMBINED_OBJ) $(COMMON_OBJ)
 
 $(COMBINED_OBJ): visualptt-rx-list.c visualptt-tx.c
 
+# Build annotation watcher (no GTK or GStreamer dependencies)
+$(WATCHER_TARGET): $(WATCHER_OBJ)
+	$(CC) $(CFLAGS) -std=c11 -Wextra -Wpedantic -o $@ $^
+
+$(WATCHER_OBJ): $(WATCHER_SRC)
+	$(CC) $(CFLAGS) -std=c11 -Wextra -Wpedantic -c $< -o $@
+
 # Generic rule to compile .c → .o
 %.o: %.c
 	$(CC) $(CFLAGS) $(GST_CFLAGS) $(GTK_CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(REC_OBJ) $(SPOOL_OBJ) $(LIST_OBJ) $(COMBINED_OBJ) $(COMMON_OBJ) \
-	      $(REC_TARGET) $(SPOOL_TARGET) $(LIST_TARGET) $(COMBINED_TARGET)
+	rm -f $(REC_OBJ) $(SPOOL_OBJ) $(LIST_OBJ) $(COMBINED_OBJ) $(WATCHER_OBJ) \
+	      $(COMMON_OBJ) $(REC_TARGET) $(SPOOL_TARGET) $(LIST_TARGET) \
+	      $(COMBINED_TARGET) $(WATCHER_TARGET)
 
 # -----------------------------------------------------------
 # Install and uninstall
@@ -68,17 +82,20 @@ clean:
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
 
-install: $(REC_TARGET) $(SPOOL_TARGET) $(LIST_TARGET) $(COMBINED_TARGET)
+install: $(REC_TARGET) $(SPOOL_TARGET) $(LIST_TARGET) $(COMBINED_TARGET) \
+	$(WATCHER_TARGET)
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 0755 $(REC_TARGET)  $(DESTDIR)$(BINDIR)/
 	install -m 0755 $(SPOOL_TARGET) $(DESTDIR)$(BINDIR)/
 	install -m 0755 $(LIST_TARGET)  $(DESTDIR)$(BINDIR)/
 	install -m 0755 $(COMBINED_TARGET) $(DESTDIR)$(BINDIR)/
+	install -m 0755 $(WATCHER_TARGET) $(DESTDIR)$(BINDIR)/
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/$(REC_TARGET)
 	rm -f $(DESTDIR)$(BINDIR)/$(SPOOL_TARGET)
 	rm -f $(DESTDIR)$(BINDIR)/$(LIST_TARGET)
 	rm -f $(DESTDIR)$(BINDIR)/$(COMBINED_TARGET)
+	rm -f $(DESTDIR)$(BINDIR)/$(WATCHER_TARGET)
 
 .PHONY: all clean install uninstall
