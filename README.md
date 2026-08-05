@@ -7,6 +7,8 @@ Status of this repository is Work In Progress!
 
 ## Reasoning
 
+![VisualPTT](docs/visualptt.png)
+
 File-based communication provides a simple, flexible, and transport-independent
 way to exchange asynchronous, non-linear messages. A completed message is a
 self-contained object that can be queued, copied, delayed, replayed, annotated,
