@@ -2,8 +2,8 @@ CC      = gcc
 CFLAGS  = -Wall -O2
 
 # Use pkg-config to get GStreamer and GTK flags
-GST_CFLAGS = $(shell pkg-config --cflags gstreamer-1.0)
-GST_LIBS   = $(shell pkg-config --libs gstreamer-1.0)
+GST_CFLAGS = $(shell pkg-config --cflags gstreamer-1.0 gstreamer-pbutils-1.0)
+GST_LIBS   = $(shell pkg-config --libs gstreamer-1.0 gstreamer-pbutils-1.0)
 
 GTK_CFLAGS = $(shell pkg-config --cflags gtk+-3.0)
 GTK_LIBS   = $(shell pkg-config --libs gtk+-3.0)
@@ -22,8 +22,13 @@ SPOOL_SRC    = visualptt-rx.c
 SPOOL_OBJ    = $(SPOOL_SRC:.c=.o)
 SPOOL_TARGET = visualptt-rx
 
+# Program 3: GTK persistent message-list receiver
+LIST_SRC    = visualptt-rx-list.c
+LIST_OBJ    = $(LIST_SRC:.c=.o)
+LIST_TARGET = visualptt-rx-list
+
 # Default rule: build both
-all: $(REC_TARGET) $(SPOOL_TARGET)
+all: $(REC_TARGET) $(SPOOL_TARGET) $(LIST_TARGET)
 
 # Build PTT TX
 $(REC_TARGET): $(REC_OBJ) $(COMMON_OBJ)
@@ -33,13 +38,17 @@ $(REC_TARGET): $(REC_OBJ) $(COMMON_OBJ)
 $(SPOOL_TARGET): $(SPOOL_OBJ) $(COMMON_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(GST_LIBS) $(GTK_LIBS)
 
+# Build GTK persistent message-list RX
+$(LIST_TARGET): $(LIST_OBJ) $(COMMON_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(GST_LIBS) $(GTK_LIBS)
+
 # Generic rule to compile .c → .o
 %.o: %.c
 	$(CC) $(CFLAGS) $(GST_CFLAGS) $(GTK_CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(REC_OBJ) $(SPOOL_OBJ) $(COMMON_OBJ) \
-	      $(REC_TARGET) $(SPOOL_TARGET)
+	rm -f $(REC_OBJ) $(SPOOL_OBJ) $(LIST_OBJ) $(COMMON_OBJ) \
+	      $(REC_TARGET) $(SPOOL_TARGET) $(LIST_TARGET)
 
 # -----------------------------------------------------------
 # Install and uninstall
@@ -48,13 +57,15 @@ clean:
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
 
-install: $(REC_TARGET) $(SPOOL_TARGET)
+install: $(REC_TARGET) $(SPOOL_TARGET) $(LIST_TARGET)
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 0755 $(REC_TARGET)  $(DESTDIR)$(BINDIR)/
 	install -m 0755 $(SPOOL_TARGET) $(DESTDIR)$(BINDIR)/
+	install -m 0755 $(LIST_TARGET)  $(DESTDIR)$(BINDIR)/
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/$(REC_TARGET)
 	rm -f $(DESTDIR)$(BINDIR)/$(SPOOL_TARGET)
+	rm -f $(DESTDIR)$(BINDIR)/$(LIST_TARGET)
 
 .PHONY: all clean install uninstall

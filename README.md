@@ -14,6 +14,7 @@ Install required packages:
 sudo apt install \
 libgtk-3-dev \
 libgstreamer1.0-dev \
+libgstreamer-plugins-base1.0-dev \
 gstreamer1.0-alsa \
 gstreamer1.0-plugins-base \
 gstreamer1.0-plugins-good \
@@ -29,6 +30,16 @@ cd visualptt
 make
 sudo make install
 ```
+
+The persistent GTK receiver keeps received messages in its list and on disk:
+
+```
+visualptt-rx-list /path/to/output
+```
+
+Select a timestamp to replay that message. `Auto play` is enabled by default
+and plays messages as they arrive; clearing it leaves new messages in the list
+for manual playback.
 
 ## Installation
 
@@ -64,5 +75,3 @@ systemctl --user status visualptt-tx.service
 ## Configuration
 
 ..to be continued..
-
-
