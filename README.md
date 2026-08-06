@@ -56,10 +56,37 @@ cd visualptt
 make
 ```
 
-The persistent GTK receiver keeps received messages in its list and on disk:
+## Programs
+
+`visualptt` is the complete application and the main development target of
+this repository. It combines the persistent GTK message receiver with the
+push-to-talk recorder, allowing one program to receive, review, and transmit
+messages. New integrated user-facing functionality should normally be added
+to `visualptt`.
+
+The build also produces standalone programs. These remain useful for focused
+testing, diagnostics, and deployments where only one part of the system is
+needed:
+
+| Program | Functionality |
+| --- | --- |
+| `visualptt` | Complete send-and-receive application. Displays a persistent list of incoming messages, supports playback, autoplay, deletion, and annotations, and records outgoing messages from the configured push-to-talk input. |
+| `visualptt-rx-list` | Persistent receiver only. Lists incoming messages, retains them on disk, supports replay, autoplay, deletion, and annotations, but does not transmit. |
+| `visualptt-rx` | Minimal receiver prototype. Watches for incoming messages and plays them in a single GTK window, deleting each message after playback. It does not provide the persistent message list or transmit. |
+| `visualptt-tx` | Standalone push-to-talk transmitter. Monitors the input device configured in `pttkey.ini`, records a message, and moves the completed recording to the configured output directory. |
+| `annotation-watcher` | Optional background companion. Extracts audio from completed messages with FFmpeg and invokes `whisper-cli` to create annotation files for the receiver UI. |
+
+Run the main application with the incoming-message directory followed by the
+destination for completed outgoing recordings:
 
 ```
-visualptt-rx-list /path/to/output
+visualptt /path/to/incoming /path/to/outgoing
+```
+
+To run only the persistent GTK receiver:
+
+```
+visualptt-rx-list /path/to/incoming
 ```
 
 Select a timestamp to replay that message. `Auto play` is enabled by default
@@ -112,13 +139,6 @@ command downloads the `base.en` model automatically and runs inference after
 building; the documented `models/download-ggml-model.sh` command can download
 a model separately. Visual PTT and `annotation-watcher` do not download or
 install whisper.cpp or its models.
-
-Run the combined GTK receiver and push-to-talk transmitter with an incoming
-message directory followed by the destination for completed recordings:
-
-```
-visualptt /path/to/incoming /path/to/outgoing
-```
 
 The keyboard, PTT event values, hold threshold, and sounds still come from
 `pttkey.ini`. The two command-line directories override its message paths.
