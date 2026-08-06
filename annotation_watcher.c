@@ -35,6 +35,7 @@
 #define DEFAULT_DIRECTORY "samples"
 #define DEFAULT_FFMPEG "/usr/bin/ffmpeg"
 #define DEFAULT_WHISPER "/usr/local/bin/whisper-cli"
+#define DEFAULT_PRINT_FONT_SIZE "18"
 #define DEFAULT_INTERVAL 2
 #define RETRY_DELAY 30
 
@@ -59,14 +60,17 @@ static void usage(const char *program)
 {
     fprintf(stderr,
             "Usage: %s [-d directory] [-i seconds] [-F ffmpeg] [-W whisper-cli]\n"
+            "          [-P printer-program] [-S print-font-size]\n"
             "\n"
             "Defaults:\n"
             "  directory:   %s\n"
             "  interval:    %d seconds\n"
             "  ffmpeg:      %s\n"
-            "  whisper-cli: %s\n",
+            "  whisper-cli: %s\n"
+            "  printer:     disabled\n"
+            "  print font:  %s\n",
             program, DEFAULT_DIRECTORY, DEFAULT_INTERVAL, DEFAULT_FFMPEG,
-            DEFAULT_WHISPER);
+            DEFAULT_WHISPER, DEFAULT_PRINT_FONT_SIZE);
 }
 
 static bool has_mkv_extension(const char *name)
@@ -161,7 +165,115 @@ static int run_process(char *const arguments[], const char *stdout_path)
     return -1;
 }
 
-static int annotate(const char *input, const char *ffmpeg, const char *whisper)
+static char *read_text_file(const char *path)
+{
+    FILE *stream = fopen(path, "r");
+    char *contents;
+    long length;
+
+    if (stream == NULL)
+        return NULL;
+    if (fseek(stream, 0, SEEK_END) != 0 || (length = ftell(stream)) < 0 ||
+        fseek(stream, 0, SEEK_SET) != 0) {
+        fclose(stream);
+        return NULL;
+    }
+    contents = malloc((size_t)length + 1);
+    if (contents == NULL) {
+        fclose(stream);
+        return NULL;
+    }
+    if (fread(contents, 1, (size_t)length, stream) != (size_t)length) {
+        free(contents);
+        fclose(stream);
+        return NULL;
+    }
+    contents[length] = '\0';
+    fclose(stream);
+    return contents;
+}
+
+static void collapse_to_one_line(char *text)
+{
+    char *read = text;
+    char *write = text;
+    bool pending_space = false;
+
+    while (*read != '\0') {
+        if (*read == ' ' || *read == '\t' || *read == '\r' || *read == '\n') {
+            if (write != text)
+                pending_space = true;
+        } else {
+            if (pending_space)
+                *write++ = ' ';
+            *write++ = *read;
+            pending_space = false;
+        }
+        read++;
+    }
+    *write = '\0';
+}
+
+static void filename_timestamp(const char *input, char *timestamp, size_t size)
+{
+    const char *name = strrchr(input, '/');
+    int year, month, day, hour, minute, second;
+    char trailing;
+
+    name = name == NULL ? input : name + 1;
+    if (sscanf(name, "rec_%4d%2d%2d_%2d%2d%2d.mkv%c", &year, &month, &day,
+               &hour, &minute, &second, &trailing) == 6) {
+        snprintf(timestamp, size, "%04d-%02d-%02d %02d:%02d:%02d",
+                 year, month, day, hour, minute, second);
+        return;
+    }
+    snprintf(timestamp, size, "%s", name);
+    char *extension = strrchr(timestamp, '.');
+    if (extension != NULL && strcasecmp(extension, ".mkv") == 0)
+        *extension = '\0';
+}
+
+static void print_annotation(const char *input, const char *text_path,
+                             const char *printer, const char *font_size)
+{
+    char timestamp[128];
+    char *annotation = read_text_file(text_path);
+    char *message;
+    size_t message_size;
+    int status;
+
+    if (annotation == NULL) {
+        fprintf(stderr, "Could not read annotation for printing: %s\n", text_path);
+        return;
+    }
+    collapse_to_one_line(annotation);
+    filename_timestamp(input, timestamp, sizeof(timestamp));
+    message_size = strlen("VisualPTT message: \n") + strlen(timestamp) +
+                   strlen(annotation) + 1;
+    message = malloc(message_size);
+    if (message == NULL) {
+        fprintf(stderr, "Out of memory while preparing print for %s\n", input);
+        free(annotation);
+        return;
+    }
+    snprintf(message, message_size, "VisualPTT message: %s\n%s", timestamp,
+             annotation);
+
+    char *printer_arguments[] = {(char *)printer, "--font-size",
+                                 (char *)font_size, message, NULL};
+    status = run_process(printer_arguments, NULL);
+    if (status != 0)
+        fprintf(stderr, "Printer program failed for %s (status %d); annotation retained\n",
+                input, status);
+    else
+        fprintf(stderr, "Printed annotation: %s\n", text_path);
+
+    free(message);
+    free(annotation);
+}
+
+static int annotate(const char *input, const char *ffmpeg, const char *whisper,
+                    const char *printer, const char *font_size)
 {
     char *wav = replace_extension(input, ".wav");
     char *text = replace_extension(input, ".txt");
@@ -205,6 +317,8 @@ static int annotate(const char *input, const char *ffmpeg, const char *whisper)
         goto done;
     }
     fprintf(stderr, "Annotated: %s\n", text);
+    if (printer != NULL)
+        print_annotation(input, text, printer, font_size);
     result = 0;
 
 done:
@@ -237,7 +351,8 @@ static struct file_state *find_state(struct file_state **states, const char *nam
 }
 
 static void scan_directory(const char *directory, const char *ffmpeg,
-                           const char *whisper, struct file_state **states)
+                           const char *whisper, const char *printer,
+                           const char *font_size, struct file_state **states)
 {
     DIR *stream = opendir(directory);
     struct dirent *entry;
@@ -295,7 +410,7 @@ static void scan_directory(const char *directory, const char *ffmpeg,
         now = time(NULL);
         if (state->last_attempt == 0 || now - state->last_attempt >= RETRY_DELAY) {
             state->last_attempt = now;
-            annotate(input, ffmpeg, whisper);
+            annotate(input, ffmpeg, whisper, printer, font_size);
         }
         free(text);
         free(input);
@@ -318,12 +433,14 @@ int main(int argc, char **argv)
     const char *directory = DEFAULT_DIRECTORY;
     const char *ffmpeg = DEFAULT_FFMPEG;
     const char *whisper = DEFAULT_WHISPER;
+    const char *printer = NULL;
+    const char *font_size = DEFAULT_PRINT_FONT_SIZE;
     unsigned int interval = DEFAULT_INTERVAL;
     struct file_state *states = NULL;
     struct sigaction action = {0};
     int option;
 
-    while ((option = getopt(argc, argv, "d:i:F:W:h")) != -1) {
+    while ((option = getopt(argc, argv, "d:i:F:W:P:S:h")) != -1) {
         switch (option) {
         case 'd': directory = optarg; break;
         case 'i': {
@@ -338,6 +455,17 @@ int main(int argc, char **argv)
         }
         case 'F': ffmpeg = optarg; break;
         case 'W': whisper = optarg; break;
+        case 'P': printer = optarg; break;
+        case 'S': {
+            char *end;
+            unsigned long value = strtoul(optarg, &end, 10);
+            if (*optarg == '\0' || *end != '\0' || value == 0 || value > 1000) {
+                fprintf(stderr, "Invalid print font size: %s\n", optarg);
+                return EXIT_FAILURE;
+            }
+            font_size = optarg;
+            break;
+        }
         case 'h': usage(argv[0]); return EXIT_SUCCESS;
         default: usage(argv[0]); return EXIT_FAILURE;
         }
@@ -355,7 +483,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "Watching %s for MKV files (Ctrl-C to stop)\n", directory);
     while (!stop_requested) {
         struct timespec delay = {(time_t)interval, 0};
-        scan_directory(directory, ffmpeg, whisper, &states);
+        scan_directory(directory, ffmpeg, whisper, printer, font_size, &states);
         while (!stop_requested && nanosleep(&delay, &delay) < 0 && errno == EINTR)
             ;
     }

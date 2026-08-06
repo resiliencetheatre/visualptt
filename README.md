@@ -113,6 +113,26 @@ Run it with the same incoming-message directory used by the receiver:
 annotation-watcher -d /path/to/incoming
 ```
 
+To print each new annotation with a compatible external printer utility, pass
+its executable path with `-P`. Printing is optional and disabled by default:
+
+```
+annotation-watcher -d /path/to/incoming -P ./mbp32-print.py -S 18
+```
+
+The watcher invokes the utility as `PROGRAM --font-size SIZE MESSAGE`, where
+`MESSAGE` is one argument in this form:
+
+```
+VisualPTT message: 2026-08-05 04:41:47
+This is the annotated message collapsed to one line.
+```
+
+The timestamp is derived from a filename such as `rec_20260805_044147.mkv`.
+If the printer cannot be started or returns an error, the watcher logs the
+failure and keeps the successfully generated annotation. Use `-S` to select a
+font size other than the default of `18`.
+
 Available options are:
 
 ```
@@ -120,6 +140,8 @@ Available options are:
 -i seconds       polling interval from 1 to 3600 (default: 2)
 -F path          FFmpeg executable (default: /usr/bin/ffmpeg)
 -W path          whisper-cli executable (default: /usr/local/bin/whisper-cli)
+-P path          printer utility (disabled by default)
+-S size          printer font size (default: 18)
 -h               show help
 ```
 
