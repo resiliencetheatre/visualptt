@@ -1,9 +1,23 @@
 /*
  * visualptt - combined GTK receiver and push-to-talk transmitter.
+ * Copyright (C) 2025 Resilience Theatre
  *
  * The existing programs are included as implementation modules so their
  * proven playback and recording helpers can be reused without changing the
  * standalone visualptt-rx-list and visualptt-tx programs.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
 #define main visualptt_rx_list_standalone_main

@@ -178,3 +178,12 @@ systemctl --user status visualptt-tx.service
 ## Configuration
 
 ..to be continued..
+
+## License
+
+Visual PTT is free software licensed under the GNU General Public License,
+version 3 or (at your option) any later version. See [LICENSE](LICENSE) for
+the full license text.
+
+The bundled `ini.c`, `ini.h`, `log.c`, and `log.h` helper files retain their
+respective MIT license notices.
