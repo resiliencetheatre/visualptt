@@ -29,6 +29,10 @@
 #undef main
 
 #include <glib-unix.h>
+#include <getopt.h>
+
+#define DEFAULT_SENDER_ID "EdgeCity"
+#define MAX_SENDER_ID_CHARACTERS 8
 
 typedef struct {
     AppState rx;
@@ -52,6 +56,7 @@ typedef struct {
     char *start_wav;
     char *end_wav;
     const char *audio_source;
+    const char *sender_id;
 } VisualPttState;
 
 static int config_int(ini_t *config, const char *key, int default_value)
@@ -100,7 +105,8 @@ static void begin_transmission(VisualPttState *state)
     }
 
     state->pipeline = start_recording_pipeline(state->current_recording_path,
-                                               state->audio_source);
+                                               state->audio_source,
+                                               state->sender_id);
     if (!state->pipeline) {
         state->current_filename[0] = '\0';
         state->current_recording_path[0] = '\0';
@@ -282,18 +288,55 @@ int main(int argc, char **argv)
     GError *discoverer_error = NULL;
     struct stat input_info;
     int status;
+    int option;
+    const char *sender_id = DEFAULT_SENDER_ID;
+    const char *input_directory;
+    const char *output_directory;
+    static const struct option options[] = {
+        { "sender-id", required_argument, NULL, 's' },
+        { "sender_id", required_argument, NULL, 's' },
+        { "help", no_argument, NULL, 'h' },
+        { NULL, 0, NULL, 0 }
+    };
     char *application_argv[] = { argv[0], NULL };
     int application_argc = 1;
 
     state.rx.annotation_clear_delay_seconds =
         DEFAULT_ANNOTATION_CLEAR_DELAY_SECONDS;
 
-    if (argc != 3) {
-        g_printerr("Usage: %s INPUT_DIRECTORY OUTPUT_DIRECTORY\n", argv[0]);
+    while ((option = getopt_long(argc, argv, "s:h", options, NULL)) != -1) {
+        switch (option) {
+        case 's':
+            sender_id = optarg;
+            break;
+        case 'h':
+            g_print("Usage: %s [--sender-id TEXT] INPUT_DIRECTORY OUTPUT_DIRECTORY\n",
+                    argv[0]);
+            g_print("  -s, --sender-id TEXT  Sender label (1-%d characters; default: %s)\n",
+                    MAX_SENDER_ID_CHARACTERS, DEFAULT_SENDER_ID);
+            return 0;
+        default:
+            g_printerr("Usage: %s [--sender-id TEXT] INPUT_DIRECTORY OUTPUT_DIRECTORY\n",
+                       argv[0]);
+            return 1;
+        }
+    }
+
+    if (!g_utf8_validate(sender_id, -1, NULL) || !*sender_id ||
+        g_utf8_strlen(sender_id, -1) > MAX_SENDER_ID_CHARACTERS) {
+        g_printerr("sender_id must contain between 1 and %d valid UTF-8 characters\n",
+                   MAX_SENDER_ID_CHARACTERS);
         return 1;
     }
-    if (stat(argv[1], &input_info) != 0 || !S_ISDIR(input_info.st_mode)) {
-        g_printerr("Input directory '%s' is not accessible\n", argv[1]);
+    if (argc - optind != 2) {
+        g_printerr("Usage: %s [--sender-id TEXT] INPUT_DIRECTORY OUTPUT_DIRECTORY\n",
+                   argv[0]);
+        return 1;
+    }
+    input_directory = argv[optind];
+    output_directory = argv[optind + 1];
+    if (stat(input_directory, &input_info) != 0 || !S_ISDIR(input_info.st_mode)) {
+        g_printerr("Input directory '%s' is not accessible\n", input_directory);
         return 1;
     }
 
@@ -301,7 +344,8 @@ int main(int argc, char **argv)
     log_set_quiet(1);
     gst_init(&argc, &argv);
 
-    g_strlcpy(state.rx.watch_dir, argv[1], sizeof(state.rx.watch_dir));
+    state.sender_id = sender_id;
+    g_strlcpy(state.rx.watch_dir, input_directory, sizeof(state.rx.watch_dir));
     if (g_snprintf(state.rx.indicator_path, sizeof(state.rx.indicator_path),
                    "%s/incoming.flag", state.rx.watch_dir) >=
         (int)sizeof(state.rx.indicator_path)) {
@@ -320,7 +364,7 @@ int main(int argc, char **argv)
         g_clear_error(&discoverer_error);
     }
 
-    if (!initialize_transmitter(&state, argv[2])) {
+    if (!initialize_transmitter(&state, output_directory)) {
         g_printerr("Could not initialize combined transmitter\n");
         cleanup_combined(&state);
         return 1;

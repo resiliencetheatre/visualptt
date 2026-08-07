@@ -114,14 +114,23 @@ static int make_absolute_path(const char *path, char *out, size_t out_len)
 
 /* Start GStreamer recording pipeline, return GstElement* or NULL on error */
 static GstElement *start_recording_pipeline(const char *filename,
-                                            const char *audio_source)
+                                            const char *audio_source,
+                                            const char *sender_id)
 {
     if (!audio_source || !*audio_source)
         audio_source = "autoaudiosrc";
+    if (!sender_id || !*sender_id)
+        sender_id = "EdgeCity";
 
     gchar *escaped_filename = g_strescape(filename, NULL);
     if (!escaped_filename) {
         log_error("Failed to escape recording filename: %s", filename);
+        return NULL;
+    }
+    gchar *escaped_sender_id = g_strescape(sender_id, NULL);
+    if (!escaped_sender_id) {
+        log_error("Failed to escape sender ID: %s", sender_id);
+        g_free(escaped_filename);
         return NULL;
     }
 
@@ -131,7 +140,7 @@ static GstElement *start_recording_pipeline(const char *filename,
         "video/x-raw,width=160,height=120,format=I420 ! "
         "clockoverlay "
             "time-format=\"%%d.%%m.%%Y - %%H:%%M:%%S\" "
-            "text=\"Edge City\" "
+            "text=\"%s\" "
             "halignment=center valignment=top "
             "xpad=0 ypad=0 "
             "shaded-background=false font-desc=\"Sans, 26\" "
@@ -146,8 +155,9 @@ static GstElement *start_recording_pipeline(const char *filename,
         "queue ! mux. "
         "matroskamux name=mux streamable=true ! "
         "filesink location=\"%s\"",
-        audio_source, escaped_filename
+        escaped_sender_id, audio_source, escaped_filename
     );
+    g_free(escaped_sender_id);
     g_free(escaped_filename);
 
     if (!pipeline_str) {
@@ -691,7 +701,8 @@ int main(int argc, char *argv[])
                          getpid(), current_recording_path);
 
                 pipeline = start_recording_pipeline(current_recording_path,
-                                                    audio_source);
+                                                    audio_source,
+                                                    "EdgeCity");
                 if (!pipeline) {
                     log_error("[%d] Failed to start recording pipeline", getpid());
                     state = 0;
