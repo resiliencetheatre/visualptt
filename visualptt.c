@@ -177,15 +177,9 @@ static gboolean initialize_transmitter(VisualPttState *state,
 
     state->keyboard_fd = -1;
     state->threshold_ms = 1000;
-    state->config = ini_load("pttkey.ini");
-    if (!state->config) {
-        g_printerr("Cannot load pttkey.ini\n");
-        return FALSE;
-    }
-
     keyboard_device = ini_get(state->config, "pttkey", "keyboard_device");
     if (!keyboard_device || !*keyboard_device) {
-        g_printerr("keyboard_device is not set in pttkey.ini\n");
+        g_printerr("keyboard_device is not set in the INI file\n");
         return FALSE;
     }
 
@@ -289,38 +283,42 @@ int main(int argc, char **argv)
     struct stat input_info;
     int status;
     int option;
-    const char *sender_id = DEFAULT_SENDER_ID;
+    const char *ini_file = "pttkey.ini";
+    const char *sender_id;
     const char *input_directory;
     const char *output_directory;
-    static const struct option options[] = {
-        { "sender-id", required_argument, NULL, 's' },
-        { "sender_id", required_argument, NULL, 's' },
-        { "help", no_argument, NULL, 'h' },
-        { NULL, 0, NULL, 0 }
-    };
     char *application_argv[] = { argv[0], NULL };
     int application_argc = 1;
 
     state.rx.annotation_clear_delay_seconds =
         DEFAULT_ANNOTATION_CLEAR_DELAY_SECONDS;
 
-    while ((option = getopt_long(argc, argv, "s:h", options, NULL)) != -1) {
+    while ((option = getopt(argc, argv, "i:")) != -1) {
         switch (option) {
-        case 's':
-            sender_id = optarg;
+        case 'i':
+            ini_file = optarg;
             break;
-        case 'h':
-            g_print("Usage: %s [--sender-id TEXT] INPUT_DIRECTORY OUTPUT_DIRECTORY\n",
-                    argv[0]);
-            g_print("  -s, --sender-id TEXT  Sender label (1-%d characters; default: %s)\n",
-                    MAX_SENDER_ID_CHARACTERS, DEFAULT_SENDER_ID);
-            return 0;
         default:
-            g_printerr("Usage: %s [--sender-id TEXT] INPUT_DIRECTORY OUTPUT_DIRECTORY\n",
-                       argv[0]);
+            g_printerr("Usage: %s [-i INI-FILE]\n", argv[0]);
             return 1;
         }
     }
+
+    if (optind != argc) {
+        g_printerr("Usage: %s [-i INI-FILE]\n", argv[0]);
+        return 1;
+    }
+
+    state.config = ini_load(ini_file);
+    if (!state.config) {
+        g_printerr("Cannot load INI file '%s'\n", ini_file);
+        return 1;
+    }
+    sender_id = ini_get(state.config, "pttkey", "sender_id");
+    if (!sender_id || !*sender_id)
+        sender_id = DEFAULT_SENDER_ID;
+    input_directory = ini_get(state.config, "pttkey", "input_dir");
+    output_directory = ini_get(state.config, "pttkey", "output_dir");
 
     if (!g_utf8_validate(sender_id, -1, NULL) || !*sender_id ||
         g_utf8_strlen(sender_id, -1) > MAX_SENDER_ID_CHARACTERS) {
@@ -328,13 +326,14 @@ int main(int argc, char **argv)
                    MAX_SENDER_ID_CHARACTERS);
         return 1;
     }
-    if (argc - optind != 2) {
-        g_printerr("Usage: %s [--sender-id TEXT] INPUT_DIRECTORY OUTPUT_DIRECTORY\n",
-                   argv[0]);
+    if (!input_directory || !*input_directory) {
+        g_printerr("input_dir is not set in '%s'\n", ini_file);
         return 1;
     }
-    input_directory = argv[optind];
-    output_directory = argv[optind + 1];
+    if (!output_directory || !*output_directory) {
+        g_printerr("output_dir is not set in '%s'\n", ini_file);
+        return 1;
+    }
     if (stat(input_directory, &input_info) != 0 || !S_ISDIR(input_info.st_mode)) {
         g_printerr("Input directory '%s' is not accessible\n", input_directory);
         return 1;
