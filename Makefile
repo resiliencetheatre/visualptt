@@ -8,6 +8,9 @@ GST_LIBS   = $(shell pkg-config --libs gstreamer-1.0 gstreamer-pbutils-1.0)
 GTK_CFLAGS = $(shell pkg-config --cflags gtk+-3.0)
 GTK_LIBS   = $(shell pkg-config --libs gtk+-3.0)
 
+XMPP_CFLAGS = $(shell pkg-config --cflags libstrophe libcurl openssl)
+XMPP_LIBS   = $(shell pkg-config --libs libstrophe libcurl openssl)
+
 # Common sources for both binaries
 COMMON_SRC = log.c ini.c
 COMMON_OBJ = $(COMMON_SRC:.c=.o)
@@ -37,9 +40,14 @@ WATCHER_SRC    = annotation_watcher.c
 WATCHER_OBJ    = $(WATCHER_SRC:.c=.o)
 WATCHER_TARGET = annotation-watcher
 
+# Program 6: optional XMPP HTTP Upload exporter
+XMPP_SRC    = visualptt-xmpp-send.c
+XMPP_OBJ    = $(XMPP_SRC:.c=.o)
+XMPP_TARGET = visualptt-xmpp-send
+
 # Default rule: build all programs
 all: $(REC_TARGET) $(SPOOL_TARGET) $(LIST_TARGET) $(COMBINED_TARGET) \
-	$(WATCHER_TARGET)
+	$(WATCHER_TARGET) $(XMPP_TARGET)
 
 # Build PTT TX
 $(REC_TARGET): $(REC_OBJ) $(COMMON_OBJ)
@@ -66,14 +74,20 @@ $(WATCHER_TARGET): $(WATCHER_OBJ)
 $(WATCHER_OBJ): $(WATCHER_SRC)
 	$(CC) $(CFLAGS) -std=c11 -Wextra -Wpedantic -c $< -o $@
 
+$(XMPP_TARGET): $(XMPP_OBJ) ini.o
+	$(CC) $(CFLAGS) -std=c11 -Wextra -Wpedantic -o $@ $^ $(XMPP_LIBS)
+
+$(XMPP_OBJ): $(XMPP_SRC) ini.h
+	$(CC) $(CFLAGS) -std=c11 -Wextra -Wpedantic $(XMPP_CFLAGS) -c $< -o $@
+
 # Generic rule to compile .c → .o
 %.o: %.c
 	$(CC) $(CFLAGS) $(GST_CFLAGS) $(GTK_CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(REC_OBJ) $(SPOOL_OBJ) $(LIST_OBJ) $(COMBINED_OBJ) $(WATCHER_OBJ) \
+	rm -f $(REC_OBJ) $(SPOOL_OBJ) $(LIST_OBJ) $(COMBINED_OBJ) $(WATCHER_OBJ) $(XMPP_OBJ) \
 	      $(COMMON_OBJ) $(REC_TARGET) $(SPOOL_TARGET) $(LIST_TARGET) \
-	      $(COMBINED_TARGET) $(WATCHER_TARGET)
+	      $(COMBINED_TARGET) $(WATCHER_TARGET) $(XMPP_TARGET)
 
 # -----------------------------------------------------------
 # Install and uninstall
@@ -83,13 +97,14 @@ PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
 
 install: $(REC_TARGET) $(SPOOL_TARGET) $(LIST_TARGET) $(COMBINED_TARGET) \
-	$(WATCHER_TARGET)
+	$(WATCHER_TARGET) $(XMPP_TARGET)
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 0755 $(REC_TARGET)  $(DESTDIR)$(BINDIR)/
 	install -m 0755 $(SPOOL_TARGET) $(DESTDIR)$(BINDIR)/
 	install -m 0755 $(LIST_TARGET)  $(DESTDIR)$(BINDIR)/
 	install -m 0755 $(COMBINED_TARGET) $(DESTDIR)$(BINDIR)/
 	install -m 0755 $(WATCHER_TARGET) $(DESTDIR)$(BINDIR)/
+	install -m 0755 $(XMPP_TARGET) $(DESTDIR)$(BINDIR)/
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/$(REC_TARGET)
@@ -97,5 +112,9 @@ uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/$(LIST_TARGET)
 	rm -f $(DESTDIR)$(BINDIR)/$(COMBINED_TARGET)
 	rm -f $(DESTDIR)$(BINDIR)/$(WATCHER_TARGET)
+	rm -f $(DESTDIR)$(BINDIR)/$(XMPP_TARGET)
 
-.PHONY: all clean install uninstall
+test-xmpp: $(XMPP_TARGET)
+	sh tests/test-xmpp-send.sh ./$(XMPP_TARGET)
+
+.PHONY: all clean install uninstall test-xmpp

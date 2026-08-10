@@ -3,6 +3,7 @@ visualptt-rx
 visualptt-rx-list
 visualptt
 annotation-watcher
+visualptt-xmpp-send
 *.o
 *.mkv
 output
