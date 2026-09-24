@@ -56,6 +56,7 @@
 
 #include "log.h"
 #include "ini.h"
+#include "recording.h"
 
 static volatile sig_atomic_t g_running = 1;
 
@@ -65,13 +66,13 @@ static void handle_sigint(int sig)
     g_running = 0;
 }
 
-/* Create timestamped filename like rec_20251117_123456.mkv */
-static void make_timestamp_filename(char *buf, size_t len)
+/* fdsink uses our reserved descriptor and never reopens/truncates a path.
+ * GStreamer does not own it; the pipeline owns this cleanup callback. */
+static void close_recording_fd(gpointer data)
 {
-    time_t t = time(NULL);
-    struct tm tm;
-    localtime_r(&t, &tm);
-    strftime(buf, len, "rec_%Y%m%d_%H%M%S.mkv", &tm);
+    int fd = GPOINTER_TO_INT(data) - 1;
+    if (fsync(fd) != 0) log_error("Recording fsync failed: %s", strerror(errno));
+    close(fd);
 }
 
 /* Small helper: difference in ms between two timespecs (now - then) */
@@ -113,7 +114,7 @@ static int make_absolute_path(const char *path, char *out, size_t out_len)
 }
 
 /* Start GStreamer recording pipeline, return GstElement* or NULL on error */
-static GstElement *start_recording_pipeline(const char *filename,
+static GstElement *start_recording_pipeline(const char *filename, int recording_fd,
                                             const char *audio_source,
                                             const char *sender_id)
 {
@@ -122,15 +123,10 @@ static GstElement *start_recording_pipeline(const char *filename,
     if (!sender_id || !*sender_id)
         sender_id = "EdgeCity";
 
-    gchar *escaped_filename = g_strescape(filename, NULL);
-    if (!escaped_filename) {
-        log_error("Failed to escape recording filename: %s", filename);
-        return NULL;
-    }
     gchar *escaped_sender_id = g_strescape(sender_id, NULL);
     if (!escaped_sender_id) {
         log_error("Failed to escape sender ID: %s", sender_id);
-        g_free(escaped_filename);
+        close(recording_fd);
         return NULL;
     }
 
@@ -154,14 +150,14 @@ static GstElement *start_recording_pipeline(const char *filename,
         "opusenc bitrate=24000 frame-size=40 complexity=5 ! "
         "queue ! mux. "
         "matroskamux name=mux streamable=true ! "
-        "filesink location=\"%s\"",
-        escaped_sender_id, audio_source, escaped_filename
+        "fdsink fd=%d",
+        escaped_sender_id, audio_source, recording_fd
     );
     g_free(escaped_sender_id);
-    g_free(escaped_filename);
 
     if (!pipeline_str) {
         log_error("Failed to allocate GStreamer pipeline string");
+        close(recording_fd);
         return NULL;
     }
 
@@ -172,12 +168,16 @@ static GstElement *start_recording_pipeline(const char *filename,
     g_free(pipeline_str);
 
     if (!pipeline) {
+        close(recording_fd);
         log_error("gst_parse_launch() failed: %s",
                   err ? err->message : "unknown error");
         if (err)
             g_error_free(err);
         return NULL;
     }
+
+    g_object_set_data_full(G_OBJECT(pipeline), "recording-fd",
+                           GINT_TO_POINTER(recording_fd + 1), close_recording_fd);
 
     /* gst_parse_launch() can return a partial pipeline together with GError.
      * Treat any parse error as fatal rather than recording with missing elements.
@@ -231,11 +231,12 @@ static GstElement *start_recording_pipeline(const char *filename,
 }
 
 /* Stop GStreamer pipeline cleanly: send EOS (best-effort), wait a bit, then set NULL & unref */
-static void stop_recording_pipeline(GstElement *pipeline)
+static bool stop_recording_pipeline(GstElement *pipeline)
 {
     if (!pipeline)
-        return;
+        return false;
 
+    bool completed = false;
     log_info("Stopping recording...");
 
     GstBus *bus = gst_element_get_bus(pipeline);
@@ -243,7 +244,7 @@ static void stop_recording_pipeline(GstElement *pipeline)
         log_warn("No bus from pipeline, forcing NULL state");
         gst_element_set_state(pipeline, GST_STATE_NULL);
         gst_object_unref(pipeline);
-        return;
+        return false;
     }
 
     /* Try to send EOS so matroskamux can finalize file */
@@ -261,6 +262,7 @@ static void stop_recording_pipeline(GstElement *pipeline)
     if (msg) {
         switch (GST_MESSAGE_TYPE(msg)) {
         case GST_MESSAGE_EOS:
+            completed = true;
             log_debug("Received EOS from pipeline");
             break;
         case GST_MESSAGE_ERROR: {
@@ -287,9 +289,13 @@ static void stop_recording_pipeline(GstElement *pipeline)
 
     /* In any case, force shutdown now */
     gst_element_set_state(pipeline, GST_STATE_NULL);
+    int fd = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(pipeline), "recording-fd")) - 1;
+    if (fd < 0 || fsync(fd) != 0) completed = false;
     gst_object_unref(pipeline);
 
+    if (!completed) log_error("Recording did not finalize; retaining staging file for recovery");
     log_info("Recording stopped.");
+    return completed;
 }
 
 /* Ensure output directory exists (best-effort).
@@ -329,34 +335,12 @@ static int move_finished_file(const char *source_path,
     if (!source_path || !*source_path || !basename || !*basename)
         return -1;
 
-    if (!output_dir || !*output_dir)
-        return 0;
-
-    struct stat st;
-    if (stat(source_path, &st) != 0) {
-        log_error("Recording source '%s' does not exist: %s",
-                  source_path, strerror(errno));
-        return -1;
-    }
-
-    log_info("Finalized recording: %s (%lld bytes)",
-             source_path, (long long)st.st_size);
-
-    char dest[PATH_MAX];
-    int n = snprintf(dest, sizeof(dest), "%s/%s", output_dir, basename);
-    if (n < 0 || (size_t)n >= sizeof(dest)) {
-        log_error("Destination path is too long: %s/%s",
-                  output_dir, basename);
-        return -1;
-    }
-
-    if (rename(source_path, dest) == 0) {
-        log_info("Moved '%s' -> '%s'", source_path, dest);
+    if (recording_publish(source_path, basename, output_dir) == 0) {
+        log_info("Published recording: %s/%s", output_dir ? output_dir : ".", basename);
         return 0;
     }
-
-    log_error("Failed to move '%s' to '%s': %s",
-              source_path, dest, strerror(errno));
+    log_error("Publication failed; recovery recording retained at '%s': %s",
+              source_path, strerror(errno));
     return -1;
 }
 
@@ -651,11 +635,11 @@ int main(int argc, char *argv[])
                     log_info("[%d] PTT up -> stopping TX", getpid());
                     state = 0;
 
-                    stop_recording_pipeline(pipeline);
+                    bool completed = stop_recording_pipeline(pipeline);
                     pipeline = NULL;
 
                     /* Move the finalized file into output_dir (if configured) */
-                    if (current_filename[0] != '\0' &&
+                    if (completed && current_filename[0] != '\0' &&
                         current_recording_path[0] != '\0') {
                         move_finished_file(current_recording_path,
                                            current_filename,
@@ -686,12 +670,10 @@ int main(int argc, char *argv[])
                 log_info("[%d] PTT accepted, held %ld ms (>= %d ms)",
                          getpid(), held_ms, ptt_down_threshold_ms);
 
-                make_timestamp_filename(current_filename, sizeof(current_filename));
-
-                if (make_absolute_path(current_filename,
-                                       current_recording_path,
-                                       sizeof(current_recording_path)) != 0) {
-                    log_error("[%d] Failed to build absolute recording path", getpid());
+                int recording_fd = recording_reserve(current_filename, sizeof(current_filename),
+                                                      current_recording_path, sizeof(current_recording_path));
+                if (recording_fd < 0) {
+                    log_error("[%d] Cannot reserve recording: %s", getpid(), strerror(errno));
                     ptt_pressed = false;
                     current_filename[0] = '\0';
                     continue;
@@ -700,7 +682,7 @@ int main(int argc, char *argv[])
                 log_info("[%d] Starting recording to %s",
                          getpid(), current_recording_path);
 
-                pipeline = start_recording_pipeline(current_recording_path,
+                pipeline = start_recording_pipeline(current_recording_path, recording_fd,
                                                     audio_source,
                                                     "EdgeCity");
                 if (!pipeline) {
@@ -732,9 +714,9 @@ int main(int argc, char *argv[])
 
     /* If we exit while still recording, stop pipeline and clean up indicator */
     if (pipeline) {
-        stop_recording_pipeline(pipeline);
+        bool completed = stop_recording_pipeline(pipeline);
         pipeline = NULL;
-        if (current_filename[0] != '\0' &&
+        if (completed && current_filename[0] != '\0' &&
             current_recording_path[0] != '\0') {
             move_finished_file(current_recording_path,
                                current_filename,

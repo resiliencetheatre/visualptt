@@ -10,3 +10,12 @@ output
 models
 pttkey-t490.ini
 test
+AGENTS.md
+
+# Generated collector and delivery-test build products
+visualptt-collector
+tests/test-recording
+tests/test-annotations
+tests/test-receiver-companions
+tests/test-collector
+tests/test-collector-sanitize

@@ -73,12 +73,13 @@ static void set_combined_status(VisualPttState *state, const char *text)
 
 static void finish_transmission(VisualPttState *state)
 {
+    bool completed = false;
     if (state->pipeline) {
-        stop_recording_pipeline(state->pipeline);
+        completed = stop_recording_pipeline(state->pipeline);
         state->pipeline = NULL;
     }
 
-    if (state->current_filename[0] && state->current_recording_path[0]) {
+    if (completed && state->current_filename[0] && state->current_recording_path[0]) {
         move_finished_file(state->current_recording_path,
                            state->current_filename, state->output_dir);
     }
@@ -95,16 +96,15 @@ static void finish_transmission(VisualPttState *state)
 
 static void begin_transmission(VisualPttState *state)
 {
-    make_timestamp_filename(state->current_filename,
-                            sizeof(state->current_filename));
-    if (make_absolute_path(state->current_filename,
-                           state->current_recording_path,
-                           sizeof(state->current_recording_path)) != 0) {
+    int recording_fd = recording_reserve(state->current_filename, sizeof(state->current_filename),
+                                          state->current_recording_path, sizeof(state->current_recording_path));
+    if (recording_fd < 0) {
+        log_error("Cannot reserve recording: %s", strerror(errno));
         state->pressed = false;
         return;
     }
 
-    state->pipeline = start_recording_pipeline(state->current_recording_path,
+    state->pipeline = start_recording_pipeline(state->current_recording_path, recording_fd,
                                                state->audio_source,
                                                state->sender_id);
     if (!state->pipeline) {

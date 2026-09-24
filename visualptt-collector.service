@@ -1,0 +1,17 @@
+# Install as ~/.config/systemd/user/visualptt-collector.service.
+# Edit config paths and create directories before enabling this user service.
+[Unit]
+Description=VisualPTT remote-pool collector
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/visualptt-collector --config %h/.config/visualptt/collector.ini
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=default.target

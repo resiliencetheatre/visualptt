@@ -32,6 +32,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "recording.h"
+
 #define DEFAULT_DIRECTORY "samples"
 #define DEFAULT_FFMPEG "/usr/bin/ffmpeg"
 #define DEFAULT_WHISPER "/usr/local/bin/whisper-cli"
@@ -217,14 +219,12 @@ static void collapse_to_one_line(char *text)
 static void filename_timestamp(const char *input, char *timestamp, size_t size)
 {
     const char *name = strrchr(input, '/');
-    int year, month, day, hour, minute, second;
-    char trailing;
-
     name = name == NULL ? input : name + 1;
-    if (sscanf(name, "rec_%4d%2d%2d_%2d%2d%2d.mkv%c", &year, &month, &day,
-               &hour, &minute, &second, &trailing) == 6) {
-        snprintf(timestamp, size, "%04d-%02d-%02d %02d:%02d:%02d",
-                 year, month, day, hour, minute, second);
+    int offset = recording_timestamp_offset(name);
+    if (offset >= 0) {
+        const char *t = name + offset;
+        snprintf(timestamp, size, "%.4s-%.2s-%.2s %.2s:%.2s:%.2s",
+                 t, t + 4, t + 6, t + 9, t + 11, t + 13);
         return;
     }
     snprintf(timestamp, size, "%s", name);

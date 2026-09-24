@@ -139,7 +139,8 @@ VisualPTT message: 2026-08-05 04:41:47
 This is the annotated message collapsed to one line.
 ```
 
-The timestamp is derived from a filename such as `rec_20260805_044147.mkv`.
+The timestamp is derived from legacy `rec_20260805_044147.mkv` names or the
+new random-suffixed names, including collector origin prefixes.
 If the printer cannot be started or returns an error, the watcher logs the
 failure and keeps the successfully generated annotation. Use `-S` to select a
 font size other than the default of `18`.
@@ -312,3 +313,32 @@ the full license text.
 
 The bundled `ini.c`, `ini.h`, `log.c`, and `log.h` helper files retain their
 respective MIT license notices.
+
+## Optional delivery from three or more peers
+
+The normal two-peer setup still runs with no collector and no database. Both
+transmitters now create `rec_YYYYMMDD_HHMMSS_<128-bit random hex>.mkv` recordings
+through a shared exclusive reservation and no-overwrite publication helper.
+Legacy recordings remain readable. Annotation WAV/TXT names preserve the full
+recording stem, and optional printing supports both formats and origin prefixes.
+
+For multiple peers, build/run the separate `visualptt-collector`. It copies each
+remote origin's synchronized pool into one private VisualPTT inbox, with a local
+SQLite delivery ledger preventing replay after inbox deletion. Optional
+origin-only purge defaults to a 15-minute interval and 48-hour retention when
+enabled. Delivery is best effort within that retention window.
+
+See [the collector deployment and recovery guide](COLLECTOR.md),
+[collector config example](visualptt-collector.ini), and
+[systemd user service](visualptt-collector.service) for a complete A/B/C setup.
+Syncthing mappings are deployment configuration; `pttkey.ini` is unchanged.
+The collector is a native C executable using SQLite and built-in SHA-256;
+no Python or OpenSSL is needed to build, test, or run it. SQLite is its only
+external library dependency beyond the system C runtime.
+
+```sh
+make visualptt-collector
+make test-delivery
+# After editing the sample and creating its directories:
+./visualptt-collector --config visualptt-collector.ini
+```
